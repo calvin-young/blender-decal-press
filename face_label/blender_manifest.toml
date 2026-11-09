@@ -1,0 +1,20 @@
+schema_version = "1.0.0"
+
+id = "face_label"
+version = "0.1.0"
+name = "Face Label"
+tagline = "Print a text label as a texture on selected faces, for full-color 3D printing"
+maintainer = "Calvin Young <github.com/calvin-young>"
+type = "add-on"
+website = "https://github.com/calvin-young/blender-face-label"
+
+tags = ["Mesh", "Material", "UV"]
+
+# blf.bind_imbuf (drawing text into an image) is missing in 4.2.
+blender_version_min = "4.4.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 Calvin Young"]
+
+[permissions]
+files = "Reads a font file and writes a temporary PNG while drawing a label"
