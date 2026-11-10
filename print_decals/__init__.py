@@ -32,7 +32,11 @@ MAX_PIXELS = 8192  # longest image side
 MEASURE_SIZE = 200  # font size used to measure the ink box
 BASE_KEY = "print_decal_base"  # material custom property: the material it was copied from
 
-# Bold sans fonts tried in order when neither the decal nor the preferences set one.
+# Bundled default: Nunito Black (SIL Open Font License, see fonts/OFL.txt),
+# a static instance of the Nunito variable font at weight 900.
+BUNDLED_FONT = os.path.join(os.path.dirname(__file__), "fonts", "Nunito-Black.ttf")
+
+# Bold sans system fonts, tried when the fonts above fail to load.
 FONT_CANDIDATES = (
     "C:/Windows/Fonts/arialbd.ttf",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -41,7 +45,8 @@ FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
 )
 
-_font_ids = {}
+_font_ids = {}  # path -> blf font id, or None when it didn't load or draw
+font_warnings = {}  # decal image pointer -> message, shown in the panel
 
 
 def _prefs():
@@ -49,19 +54,33 @@ def _prefs():
     return addon.preferences if addon else None
 
 
-def _font_id(path):
-    path = bpy.path.abspath(path) if path else ""
-    if not path:
-        prefs = _prefs()
-        path = bpy.path.abspath(prefs.default_font) if prefs and prefs.default_font else ""
-    if not path or not os.path.isfile(path):
-        path = next((p for p in FONT_CANDIDATES if os.path.isfile(p)), "")
-    if not path:
-        return 0  # Blender's own UI font
+def _load_font(path):
+    """blf id of a font that loads and draws, or None."""
     if path not in _font_ids:
-        fid = blf.load(path)
-        _font_ids[path] = fid if fid != -1 else 0
+        fid = blf.load(path) if os.path.isfile(path) else -1
+        ok = fid != -1 and _ink_box(fid, "Hg") is not None
+        _font_ids[path] = fid if ok else None
     return _font_ids[path]
+
+
+def _font_id(path, decal=None):
+    """The first usable font: decal's own, the preferences', bundled, system.
+
+    Falls back to Blender's UI font, which is always there. Records a warning
+    for decal when a font it asked for couldn't be used.
+    """
+    prefs = _prefs()
+    wanted = [bpy.path.abspath(p) for p in
+              (path, prefs.default_font if prefs else "") if p]
+    if decal is not None:
+        font_warnings.pop(decal, None)
+    for p in wanted + [BUNDLED_FONT, *FONT_CANDIDATES]:
+        fid = _load_font(p)
+        if fid is not None:
+            return fid
+        if p in wanted and decal is not None and decal not in font_warnings:
+            font_warnings[decal] = f"Couldn't use font {os.path.basename(p)}, using a fallback"
+    return 0
 
 
 def _srgb(c):
@@ -126,7 +145,7 @@ def _text_pixels(s):
     ppm = min(s.pixels_per_mm, MAX_PIXELS / max(w_mm, h_mm))
     width, height = max(4, round(w_mm * ppm)), max(4, round(h_mm * ppm))
     alpha = np.zeros((height, width), dtype=np.float32)
-    fid = _font_id(s.font_path)
+    fid = _font_id(s.font_path, s.id_data.as_pointer())
     text_box = _ink_box(fid, s.text) if s.text.strip() else None
     if text_box:
         # Vertical extent includes a cap and a descender, so decals with and
@@ -300,7 +319,7 @@ class DecalPreferences(bpy.types.AddonPreferences):
     default_font: StringProperty(
         name="Default Font", subtype="FILE_PATH",
         description="Font for text decals that don't set their own. "
-                    "Empty uses a bold system sans (Arial Bold on Windows)")
+                    "Empty uses the bundled Nunito Black")
 
     def draw(self, context):
         self.layout.prop(self, "default_font")
@@ -418,16 +437,20 @@ def remove_from_material(mat, img):
 
 
 def _base_color(mat):
-    """sRGB base color of an untextured material, or None."""
-    if mat is None or decal_nodes(mat):
+    """sRGB background for a Replace Material decal on faces using mat, or None.
+
+    The Principled Base Color when it's a plain color, else the material's
+    viewport (diffuse) color.
+    """
+    if mat is None:
         return None
     if mat.node_tree:
         for n in mat.node_tree.nodes:
             if n.type == "BSDF_PRINCIPLED":
                 sock = n.inputs["Base Color"]
-                if sock.is_linked:
-                    return None
-                return tuple(_srgb(c) for c in sock.default_value[:3])
+                if not sock.is_linked:
+                    return tuple(_srgb(c) for c in sock.default_value[:3])
+                break
     return tuple(_srgb(c) for c in mat.diffuse_color[:3])
 
 
@@ -688,6 +711,9 @@ def _draw_decal(layout, img):
     if s.kind == "TEXT":
         col.prop(s, "text_color")
         col.prop(s, "font_path")
+        warning = font_warnings.get(img.as_pointer())
+        if warning:
+            col.label(text=warning, icon="ERROR")
         col.prop(s, "pixels_per_mm")
     else:
         col.template_ID(s, "source", open="image.open")

@@ -25,12 +25,19 @@ instead (the decal drawn on a background color).
 
 Each decal is its own image (`Decal_<text>`, the name the 3MF texture gets), packed into the .blend
 with its settings, so it survives saves. Image sources are packed too. Text is drawn with Blender's
-own `blf` module (no PIL). The default font is set in the add-on preferences. 1 Blender unit = 1 mm.
+own `blf` module (no PIL). 1 Blender unit = 1 mm.
+
+The default font is Nunito Black, bundled under the SIL Open Font License (`print_decals/fonts/`). Set
+another in the add-on preferences or per decal; a font that fails to load or draw falls back to the
+bundled one, then to a bold system font, then to Blender's own, with a warning on the decal.
+
+In *Replace Material* mode the background defaults to the face's previous color: its Principled Base
+Color when that's a plain color, else its viewport display color.
 
 ## Status
 
-0.2.0. Tested on Blender 5.2.3. Needs 4.4 or newer (4.2 lacks `blf.bind_imbuf`); 4.4 and 4.5 are
-untested. Written by Claude (Anthropic) at Calvin Young's request.
+0.3.0. Tested on Blender 5.2.3 only. Declared for 4.5 and newer (`blf.bind_imbuf` first appears in
+the 4.5 release notes); 4.5 is untested. Written by Claude (Anthropic) at Calvin Young's request.
 
 ## License
 
