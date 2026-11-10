@@ -1,0 +1,761 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Calvin Young
+
+"""Print Decals: put text or an image on selected faces as a texture.
+
+By default a decal is a texture layer over the face's own material: a copy of
+that material gets a Mix node (factor = the decal's alpha) in front of the
+Principled BSDF Base Color, reading the decal through its own UV map. That is
+the pattern blender-3mf-io exports as a layered 3MF (multiproperties). The
+"Replace Material" mode gives the faces an opaque material of their own
+instead, for tools that can't read layered 3MFs.
+
+Each decal is its own image, packed into the .blend. Its settings live on that
+image and the image is redrawn whenever a setting changes.
+"""
+
+import os
+import re
+import tempfile
+
+import blf
+import bmesh
+import bpy
+import imbuf
+import numpy as np
+from bpy.props import (BoolProperty, EnumProperty, FloatProperty,
+                       FloatVectorProperty, IntProperty, PointerProperty,
+                       StringProperty)
+from mathutils import Vector
+
+MAX_PIXELS = 8192  # longest image side
+MEASURE_SIZE = 200  # font size used to measure the ink box
+BASE_KEY = "print_decal_base"  # material custom property: the material it was copied from
+
+# Bold sans fonts tried in order when neither the decal nor the preferences set one.
+FONT_CANDIDATES = (
+    "C:/Windows/Fonts/arialbd.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "/Library/Fonts/Arial Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+)
+
+_font_ids = {}
+
+
+def _prefs():
+    addon = bpy.context.preferences.addons.get(__package__)
+    return addon.preferences if addon else None
+
+
+def _font_id(path):
+    path = bpy.path.abspath(path) if path else ""
+    if not path:
+        prefs = _prefs()
+        path = bpy.path.abspath(prefs.default_font) if prefs and prefs.default_font else ""
+    if not path or not os.path.isfile(path):
+        path = next((p for p in FONT_CANDIDATES if os.path.isfile(p)), "")
+    if not path:
+        return 0  # Blender's own UI font
+    if path not in _font_ids:
+        fid = blf.load(path)
+        _font_ids[path] = fid if fid != -1 else 0
+    return _font_ids[path]
+
+
+def _srgb(c):
+    """Scene-linear to sRGB, one channel."""
+    c = max(0.0, min(1.0, c))
+    return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
+
+
+def _safe_name(text):
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("_.")
+    return "Decal_" + (name[:48] or "blank")
+
+
+def decal_name(s):
+    if s.kind == "IMAGE":
+        src = s.source
+        return _safe_name(os.path.splitext(src.name)[0] if src else "image")
+    return _safe_name(s.text)
+
+
+# ---------------------------------------------------------------------------
+# Drawing
+
+def _render_alpha(fid, text, size, width, height, x, y):
+    """Draw text into an offscreen buffer and return its coverage (h x w)."""
+    buf = imbuf.new((width, height))
+    blf.size(fid, size)
+    with blf.bind_imbuf(fid, buf):
+        blf.color(fid, 1.0, 1.0, 1.0, 1.0)
+        blf.position(fid, x, y, 0.0)
+        blf.draw_buffer(fid, text)
+    # imbuf has no pixel access from Python, so round-trip through a PNG.
+    fd, path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        imbuf.write(buf, filepath=path)
+        img = bpy.data.images.load(path, check_existing=False)
+        try:
+            px = np.empty(width * height * 4, dtype=np.float32)
+            img.pixels.foreach_get(px)
+        finally:
+            bpy.data.images.remove(img)
+    finally:
+        os.remove(path)
+    return px.reshape(height, width, 4)[..., 3]
+
+
+def _ink_box(fid, text):
+    """Ink extents (x0, x1, y0, y1) relative to the pen origin at MEASURE_SIZE."""
+    blf.size(fid, MEASURE_SIZE)
+    pad = MEASURE_SIZE
+    width = int(blf.dimensions(fid, text)[0]) + 2 * pad
+    alpha = _render_alpha(fid, text, MEASURE_SIZE, width, 3 * pad, pad, pad)
+    ys, xs = np.nonzero(alpha > 0.02)
+    if not len(xs):
+        return None
+    return xs.min() - pad, xs.max() + 1 - pad, ys.min() - pad, ys.max() + 1 - pad
+
+
+def _text_pixels(s):
+    w_mm, h_mm = max(s.width_mm, 1e-3), max(s.height_mm, 1e-3)
+    ppm = min(s.pixels_per_mm, MAX_PIXELS / max(w_mm, h_mm))
+    width, height = max(4, round(w_mm * ppm)), max(4, round(h_mm * ppm))
+    alpha = np.zeros((height, width), dtype=np.float32)
+    fid = _font_id(s.font_path)
+    text_box = _ink_box(fid, s.text) if s.text.strip() else None
+    if text_box:
+        # Vertical extent includes a cap and a descender, so decals with and
+        # without them get the same text size and baseline.
+        ref = _ink_box(fid, "Hg")
+        x0, x1 = text_box[0], text_box[1]
+        y0, y1 = min(text_box[2], ref[2]), max(text_box[3], ref[3])
+        margin = s.margin * min(width, height)
+        scale = min((height - 2 * margin) / (y1 - y0),
+                    (width - 2 * margin) / (x1 - x0))
+        if scale > 0:
+            x = (width - (x1 - x0) * scale) / 2 - x0 * scale
+            y = (height - (y1 - y0) * scale) / 2 - y0 * scale
+            alpha = _render_alpha(fid, s.text, MEASURE_SIZE * scale,
+                                  width, height, x, y)
+    rgba = np.empty((height, width, 4), dtype=np.float32)
+    rgba[..., :3] = np.array(s.text_color, dtype=np.float32)
+    rgba[..., 3] = alpha
+    return rgba
+
+
+def _image_pixels(s):
+    """The source image, keyed, centred on a transparent canvas of the face's shape."""
+    src = s.source
+    if src is None or src.size[0] == 0 or src.size[1] == 0:
+        return np.zeros((4, 4, 4), dtype=np.float32)
+    w, h = src.size
+    px = np.empty(w * h * 4, dtype=np.float32)
+    src.pixels.foreach_get(px)
+    px = px.reshape(h, w, 4)
+    if s.use_key:
+        dist = np.linalg.norm(px[..., :3] - np.array(s.key_color, dtype=np.float32),
+                              axis=-1) / np.sqrt(3.0)
+        soft = max(s.key_softness, 1e-4)
+        px[..., 3] *= np.clip((dist - s.key_tolerance) / soft, 0.0, 1.0)
+
+    # Pad (never resample) to the face's aspect ratio, keeping the margin.
+    w_mm, h_mm = max(s.width_mm, 1e-3), max(s.height_mm, 1e-3)
+    margin = s.margin * min(w_mm, h_mm)
+    mm_per_px = min((w_mm - 2 * margin) / w, (h_mm - 2 * margin) / h)
+    if mm_per_px <= 0:
+        return np.zeros((4, 4, 4), dtype=np.float32)
+    cw, ch = max(w, round(w_mm / mm_per_px)), max(h, round(h_mm / mm_per_px))
+    step = -(-max(cw, ch) // MAX_PIXELS)  # thin the source if the canvas is too big
+    if step > 1:
+        px = px[::step, ::step]
+        h, w = px.shape[:2]
+        cw, ch = cw // step, ch // step
+    canvas = np.zeros((ch, cw, 4), dtype=np.float32)
+    ox, oy = (cw - w) // 2, (ch - h) // 2
+    canvas[oy:oy + h, ox:ox + w] = px
+    return canvas
+
+
+def decal_pixels(s):
+    """RGBA float pixels (bottom row first) for decal settings s."""
+    rgba = _image_pixels(s) if s.kind == "IMAGE" else _text_pixels(s)
+    if s.mode == "REPLACE":
+        a = rgba[..., 3:4]
+        rgba[..., :3] = np.array(s.background_color, dtype=np.float32) * (1 - a) + rgba[..., :3] * a
+        rgba[..., 3] = 1.0
+    return rgba
+
+
+def update_decal(img):
+    """Redraw, rename and repack decal image img."""
+    s = img.print_decal
+    if s.kind == "IMAGE" and s.source and s.source.source == "FILE" and not s.source.packed_file:
+        s.source.pack()  # keep the original with the .blend, for later edits
+    rgba = decal_pixels(s)
+    height, width = rgba.shape[:2]
+    if tuple(img.size) != (width, height):
+        img.scale(width, height)
+    name = decal_name(s)
+    if re.sub(r"\.\d{3}$", "", img.name) != name:
+        img.name = name
+    img.pixels.foreach_set(rgba.ravel())
+    img.update()
+    img.pack()
+    for mat in decal_materials(img):
+        if s.mode == "REPLACE":
+            mat.diffuse_color = (*(_lin(c) for c in s.background_color), 1.0)
+            mat.name = img.name
+        else:
+            mat.name = "+".join([_base_name(mat)] + [n.image.name for n in decal_nodes(mat)])
+
+
+def _base_name(mat):
+    base = mat.get(BASE_KEY)
+    return base.name if isinstance(base, bpy.types.Material) else "Material"
+
+
+def _lin(c):
+    """sRGB to scene-linear, one channel."""
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _on_change(self, context):
+    if self.is_decal:
+        update_decal(self.id_data)
+
+
+def _not_decal(self, img):
+    return not img.print_decal.is_decal
+
+
+# ---------------------------------------------------------------------------
+# Settings
+
+KINDS = [("TEXT", "Text", "A line of text", "FONT_DATA", 0),
+         ("IMAGE", "Image", "An image, optionally with one color keyed out", "IMAGE_DATA", 1)]
+MODES = [("LAYER", "Layer over Material",
+          "Blend the decal over the face's own material (layered 3MF; not for Netfabb)", 0),
+         ("REPLACE", "Replace Material",
+          "Give the faces an opaque material with the decal on a background color", 1)]
+
+
+class DecalSettings(bpy.types.PropertyGroup):
+    """Stored on the decal's image."""
+    is_decal: BoolProperty(default=False)
+    kind: EnumProperty(items=KINDS, default="TEXT")
+    mode: EnumProperty(items=MODES, default="LAYER")
+    text: StringProperty(name="Text", default="", update=_on_change)
+    text_color: FloatVectorProperty(
+        name="Color", subtype="COLOR_GAMMA", size=3, min=0, max=1,
+        default=(0.0, 0.0, 0.0), update=_on_change)
+    background_color: FloatVectorProperty(
+        name="Background", subtype="COLOR_GAMMA", size=3, min=0, max=1,
+        default=(1.0, 1.0, 1.0), update=_on_change)
+    font_path: StringProperty(
+        name="Font", subtype="FILE_PATH", update=_on_change,
+        description="TTF/OTF font file. Empty uses the default font from the add-on preferences")
+    margin: FloatProperty(
+        name="Margin", min=0.0, max=0.45, default=0.1, subtype="FACTOR",
+        update=_on_change,
+        description="Space around the decal, as a fraction of the face's short side")
+    pixels_per_mm: FloatProperty(
+        name="Resolution", min=1.0, max=100.0, default=20.0, update=_on_change,
+        description="Text image pixels per mm (1 Blender unit = 1 mm)")
+    source: PointerProperty(name="Image", type=bpy.types.Image, poll=_not_decal,
+                            update=_on_change)
+    use_key: BoolProperty(name="Remove Color", default=False, update=_on_change,
+                          description="Make one color of the image transparent")
+    key_color: FloatVectorProperty(
+        name="Color", subtype="COLOR_GAMMA", size=3, min=0, max=1,
+        default=(1.0, 1.0, 1.0), update=_on_change)
+    key_tolerance: FloatProperty(
+        name="Tolerance", min=0.0, max=1.0, default=0.1, subtype="FACTOR",
+        update=_on_change, description="How far a color may be from it and still be removed")
+    key_softness: FloatProperty(
+        name="Softness", min=0.0, max=1.0, default=0.05, subtype="FACTOR",
+        update=_on_change, description="Width of the fade between removed and kept colors")
+    rotation: IntProperty(min=0, max=3, default=0)
+    width_mm: FloatProperty(default=10.0)
+    height_mm: FloatProperty(default=10.0)
+    uv_map: StringProperty()
+    show_expanded: BoolProperty(default=True)
+
+
+class NewDecalSettings(bpy.types.PropertyGroup):
+    """What the next Add Decal creates (on the scene)."""
+    kind: EnumProperty(items=KINDS, default="TEXT")
+    mode: EnumProperty(items=MODES, default="LAYER")
+    text: StringProperty(name="Text", default="Label")
+    image: PointerProperty(name="Image", type=bpy.types.Image, poll=_not_decal)
+
+
+class DecalPreferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    default_font: StringProperty(
+        name="Default Font", subtype="FILE_PATH",
+        description="Font for text decals that don't set their own. "
+                    "Empty uses a bold system sans (Arial Bold on Windows)")
+
+    def draw(self, context):
+        self.layout.prop(self, "default_font")
+
+
+# ---------------------------------------------------------------------------
+# Materials
+
+def _principled(mat):
+    nodes = mat.node_tree.nodes
+    bsdf = next((n for n in nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if bsdf is None:
+        bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+        out = next((n for n in nodes if n.type == "OUTPUT_MATERIAL"), None)
+        out = out or nodes.new("ShaderNodeOutputMaterial")
+        mat.node_tree.links.new(bsdf.outputs[0], out.inputs["Surface"])
+    return bsdf
+
+
+def _new_material(name):
+    mat = bpy.data.materials.new(name)
+    if not mat.node_tree:
+        mat.use_nodes = True
+    return mat
+
+
+def decal_nodes(mat):
+    """Image Texture nodes of mat that show a decal."""
+    if mat is None or mat.node_tree is None:
+        return []
+    return [n for n in mat.node_tree.nodes
+            if n.type == "TEX_IMAGE" and n.image and n.image.print_decal.is_decal]
+
+
+def decal_materials(img):
+    return [m for m in bpy.data.materials if any(n.image == img for n in decal_nodes(m))]
+
+
+def _free_layer_uv(mat):
+    used = set()
+    if mat and mat.node_tree:
+        used = {n.uv_map for n in mat.node_tree.nodes if n.type == "UVMAP"}
+    k = 1
+    while f"UVMap Layer {k}" in used:
+        k += 1
+    return f"UVMap Layer {k}"
+
+
+def layered_copy(base, img, uv_map):
+    """A copy of base with img blended over its Base Color through uv_map."""
+    if base is None:
+        mat = _new_material("Material")
+    else:
+        mat = base.copy()
+        mat[BASE_KEY] = mat.get(BASE_KEY) or base
+    mat.name = f"{(base.name if base else 'Material')}+{img.name}"
+    nt = mat.node_tree
+    bsdf = _principled(mat)
+    sock = bsdf.inputs["Base Color"]
+    mix = nt.nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    mix.blend_type = "MIX"
+    if sock.is_linked:
+        nt.links.new(sock.links[0].from_socket, mix.inputs[6])
+    else:
+        mix.inputs[6].default_value = sock.default_value[:]
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    tex.extension = "CLIP"
+    uvn = nt.nodes.new("ShaderNodeUVMap")
+    uvn.uv_map = uv_map
+    nt.links.new(uvn.outputs["UV"], tex.inputs["Vector"])
+    nt.links.new(tex.outputs["Color"], mix.inputs[7])
+    nt.links.new(tex.outputs["Alpha"], mix.inputs[0])
+    nt.links.new(mix.outputs[2], sock)
+    x, y = bsdf.location.x, bsdf.location.y - 360 - 300 * len(decal_nodes(mat))
+    mix.location = (x - 220, y)
+    tex.location = (x - 520, y)
+    uvn.location = (x - 720, y)
+    return mat
+
+
+def replace_material(img):
+    mat = _new_material(img.name)
+    nt = mat.node_tree
+    bsdf = _principled(mat)
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    tex.extension = "EXTEND"
+    tex.location = bsdf.location + Vector((-320, 0))
+    nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    return mat
+
+
+def remove_from_material(mat, img):
+    """Unhook img's layer from mat. True when no decal is left in mat."""
+    nt = mat.node_tree
+    for tex in [n for n in decal_nodes(mat) if n.image == img]:
+        for link in list(tex.outputs["Color"].links):
+            mix = link.to_node
+            if mix.type == "MIX":
+                below = mix.inputs[6]
+                targets = [l.to_socket for l in mix.outputs[2].links]
+                for t in targets:
+                    if below.is_linked:
+                        nt.links.new(below.links[0].from_socket, t)
+                    else:
+                        t.default_value = below.default_value
+                nt.nodes.remove(mix)
+        uvn = tex.inputs["Vector"].links[0].from_node if tex.inputs["Vector"].is_linked else None
+        nt.nodes.remove(tex)
+        if uvn and uvn.type == "UVMAP" and not uvn.outputs[0].is_linked:
+            nt.nodes.remove(uvn)
+    return not decal_nodes(mat)
+
+
+def _base_color(mat):
+    """sRGB base color of an untextured material, or None."""
+    if mat is None or decal_nodes(mat):
+        return None
+    if mat.node_tree:
+        for n in mat.node_tree.nodes:
+            if n.type == "BSDF_PRINCIPLED":
+                sock = n.inputs["Base Color"]
+                if sock.is_linked:
+                    return None
+                return tuple(_srgb(c) for c in sock.default_value[:3])
+    return tuple(_srgb(c) for c in mat.diffuse_color[:3])
+
+
+# ---------------------------------------------------------------------------
+# UV fitting
+
+def _slot_index(obj, mat):
+    for i, slot in enumerate(obj.material_slots):
+        if slot.material == mat:
+            return i
+    obj.data.materials.append(mat)
+    return len(obj.material_slots) - 1
+
+
+def fit_decal(obj, bm, img):
+    """Map the faces showing img onto its 0-1 UV square, in its UV map.
+
+    The image's long axis follows the longest edge, reading upright on walls
+    and from above (or below) on flat faces. Stores the face size in mm.
+    """
+    s = img.print_decal
+    slots = {i for i, slot in enumerate(obj.material_slots)
+             if slot.material and any(n.image == img for n in decal_nodes(slot.material))}
+    faces = [f for f in bm.faces if f.material_index in slots]
+    if not faces:
+        return False
+    mw = obj.matrix_world
+    nmat = mw.to_3x3().inverted_safe().transposed()
+    normal = Vector()
+    for f in faces:
+        normal += (nmat @ f.normal) * f.calc_area()
+    if normal.length < 1e-9:
+        return False
+    normal.normalize()
+
+    longest, u = -1.0, None
+    for f in faces:
+        for e in f.edges:
+            d = mw @ e.verts[1].co - mw @ e.verts[0].co
+            d -= normal * d.dot(normal)
+            if d.length > longest:
+                longest, u = d.length, d
+    if not u or u.length < 1e-9:
+        return False
+    u.normalize()
+    if abs(normal.z) < 0.9:
+        if normal.cross(u).z < 0:
+            u = -u
+    elif u.x < -1e-6 or (abs(u.x) <= 1e-6 and u.y < 0):
+        u = -u
+    v = normal.cross(u)
+    for _ in range(s.rotation):
+        u, v = v, -u
+
+    layers = bm.loops.layers.uv
+    if not s.uv_map:
+        s.uv_map = layers.active.name if layers.active else "UVMap"
+    uv_layer = layers.get(s.uv_map) or layers.new(s.uv_map)
+    coords = {}
+    for f in faces:
+        for loop in f.loops:
+            p = mw @ loop.vert.co
+            coords[loop] = (p.dot(u), p.dot(v))
+    us = [c[0] for c in coords.values()]
+    vs = [c[1] for c in coords.values()]
+    umin, vmin = min(us), min(vs)
+    w, h = max(us) - umin, max(vs) - vmin
+    if w < 1e-6 or h < 1e-6:
+        return False
+    for loop, (pu, pv) in coords.items():
+        loop[uv_layer].uv = ((pu - umin) / w, (pv - vmin) / h)
+    s.width_mm, s.height_mm = w, h
+    return True
+
+
+def refit(obj, img):
+    """Refit and redraw decal img on obj."""
+    if obj.mode == "EDIT":
+        bm = bmesh.from_edit_mesh(obj.data)
+        ok = fit_decal(obj, bm, img)
+        bmesh.update_edit_mesh(obj.data)
+    else:
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        ok = fit_decal(obj, bm, img)
+        bm.to_mesh(obj.data)
+        bm.free()
+    if ok:
+        update_decal(img)
+    return ok
+
+
+def active_material(context):
+    """The material under the active face (Edit Mode) or in the active slot."""
+    obj = context.active_object
+    if obj is None or obj.type != "MESH":
+        return None
+    if obj.mode != "EDIT":
+        return obj.active_material
+    bm = bmesh.from_edit_mesh(obj.data)
+    face = bm.faces.active
+    if face is None or not face.select:
+        face = next((f for f in bm.faces if f.select), None)
+    if face and face.material_index < len(obj.material_slots):
+        return obj.material_slots[face.material_index].material
+    return None
+
+
+def active_decals(context):
+    return [n.image for n in decal_nodes(active_material(context))]
+
+
+# ---------------------------------------------------------------------------
+# Operators
+
+class PRINTDECAL_OT_add(bpy.types.Operator):
+    """Put a new text or image decal on the selected faces"""
+    bl_idname = "print_decal.add"
+    bl_label = "Add Decal"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.edit_object
+        return obj is not None and obj.type == "MESH"
+
+    def execute(self, context):
+        new = context.scene.print_decal_new
+        if new.kind == "IMAGE" and new.image is None:
+            self.report({"WARNING"}, "Pick or open an image first")
+            return {"CANCELLED"}
+        obj = context.edit_object
+        bm = bmesh.from_edit_mesh(obj.data)
+        selected = [f for f in bm.faces if f.select]
+        if not selected:
+            self.report({"WARNING"}, "Select the faces for the decal")
+            return {"CANCELLED"}
+        slots = obj.material_slots
+        bases = {f.index: (slots[f.material_index].material
+                           if f.material_index < len(slots) else None) for f in selected}
+
+        img = bpy.data.images.new("Decal", 4, 4, alpha=True)
+        img.alpha_mode = "STRAIGHT"
+        s = img.print_decal
+        s.kind, s.mode = new.kind, new.mode
+        if new.kind == "TEXT":
+            s.text = new.text
+        else:
+            s.source = new.image
+        first = next(iter(bases.values()))
+        s.background_color = _base_color(first) or (1.0, 1.0, 1.0)
+        img.name = decal_name(s)
+
+        if new.mode == "LAYER":
+            s.uv_map = _free_layer_uv(first)
+            copies = {}
+            for base in set(bases.values()):
+                copies[base] = layered_copy(base, img, s.uv_map)
+            targets = {fi: copies[b] for fi, b in bases.items()}
+        else:
+            mat = replace_material(img)
+            if first:
+                mat[BASE_KEY] = first.get(BASE_KEY) or first
+            targets = {fi: mat for fi in bases}
+        index = {m: _slot_index(obj, m) for m in set(targets.values())}
+
+        bm = bmesh.from_edit_mesh(obj.data)  # slot changes can rebuild it
+        bm.faces.ensure_lookup_table()
+        for fi, mat in targets.items():
+            bm.faces[fi].material_index = index[mat]
+        s.is_decal = True
+        if not refit(obj, img):
+            self.report({"WARNING"}, "Could not fit the decal: faces have no area")
+            return {"CANCELLED"}
+        obj.active_material_index = next(iter(index.values()))
+        return {"FINISHED"}
+
+
+class _DecalOperator:
+    bl_options = {"REGISTER", "UNDO"}
+    image: StringProperty()
+
+    def decal(self, context):
+        img = bpy.data.images.get(self.image)
+        return img if img and img.print_decal.is_decal else None
+
+
+class PRINTDECAL_OT_rotate(_DecalOperator, bpy.types.Operator):
+    """Turn the decal 90 degrees on its faces"""
+    bl_idname = "print_decal.rotate"
+    bl_label = "Rotate 90°"
+
+    def execute(self, context):
+        img = self.decal(context)
+        if img is None:
+            return {"CANCELLED"}
+        img.print_decal.rotation = (img.print_decal.rotation + 1) % 4
+        refit(context.active_object, img)
+        return {"FINISHED"}
+
+
+class PRINTDECAL_OT_refit(_DecalOperator, bpy.types.Operator):
+    """Refit the decal to its faces after editing them"""
+    bl_idname = "print_decal.refit"
+    bl_label = "Refit"
+
+    def execute(self, context):
+        img = self.decal(context)
+        if img is None:
+            return {"CANCELLED"}
+        refit(context.active_object, img)
+        return {"FINISHED"}
+
+
+class PRINTDECAL_OT_remove(_DecalOperator, bpy.types.Operator):
+    """Remove the decal. Faces go back to their original material where there is one"""
+    bl_idname = "print_decal.remove"
+    bl_label = "Remove Decal"
+
+    def execute(self, context):
+        img = self.decal(context)
+        if img is None:
+            return {"CANCELLED"}
+        obj = context.active_object
+        for mat in decal_materials(img):
+            base = mat.get(BASE_KEY)
+            empty = img.print_decal.mode == "REPLACE" or remove_from_material(mat, img)
+            if empty:
+                for slot in obj.material_slots:
+                    if slot.material == mat:
+                        slot.material = base if isinstance(base, bpy.types.Material) else None
+            if mat.users == 0:
+                bpy.data.materials.remove(mat)
+        if img.users == 0:
+            bpy.data.images.remove(img)
+        return {"FINISHED"}
+
+
+# ---------------------------------------------------------------------------
+# UI: 3D Viewport sidebar, "Decal" tab
+
+def _draw_decal(layout, img):
+    s = img.print_decal
+    box = layout.box()
+    row = box.row(align=True)
+    row.prop(s, "show_expanded", text="", emboss=False,
+             icon="DISCLOSURE_TRI_DOWN" if s.show_expanded else "DISCLOSURE_TRI_RIGHT")
+    if s.kind == "TEXT":
+        row.prop(s, "text", text="")
+    else:
+        row.label(text=img.name, icon="IMAGE_DATA")
+    row.operator(PRINTDECAL_OT_remove.bl_idname, text="", icon="X", emboss=False).image = img.name
+    if not s.show_expanded:
+        return
+    col = box.column(align=True)
+    col.use_property_split = True
+    col.use_property_decorate = False
+    if s.kind == "TEXT":
+        col.prop(s, "text_color")
+        col.prop(s, "font_path")
+        col.prop(s, "pixels_per_mm")
+    else:
+        col.template_ID(s, "source", open="image.open")
+        col.prop(s, "use_key")
+        sub = col.column(align=True)
+        sub.active = s.use_key
+        sub.prop(s, "key_color")
+        sub.prop(s, "key_tolerance")
+        sub.prop(s, "key_softness")
+    col.prop(s, "margin")
+    if s.mode == "REPLACE":
+        col.prop(s, "background_color")
+    row = box.row(align=True)
+    row.operator(PRINTDECAL_OT_rotate.bl_idname, icon="FILE_REFRESH").image = img.name
+    row.operator(PRINTDECAL_OT_refit.bl_idname, icon="UV").image = img.name
+    w, h = img.size
+    mode = "layer" if s.mode == "LAYER" else "own material"
+    box.label(text=f"{s.width_mm:.1f} x {s.height_mm:.1f} mm, {w} x {h} px, {mode}")
+
+
+class PRINTDECAL_PT_panel(bpy.types.Panel):
+    bl_label = "Print Decals"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Decal"
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == "MESH"
+
+    def draw(self, context):
+        layout = self.layout
+        for img in active_decals(context):
+            _draw_decal(layout, img)
+
+        if context.mode != "EDIT_MESH":
+            layout.label(text="Select faces in Edit Mode to add a decal", icon="INFO")
+            return
+        new = context.scene.print_decal_new
+        col = layout.column()
+        col.label(text="New Decal on Selected Faces")
+        col.row().prop(new, "kind", expand=True)
+        if new.kind == "TEXT":
+            col.prop(new, "text", text="")
+        else:
+            col.template_ID(new, "image", open="image.open")
+        col.operator(PRINTDECAL_OT_add.bl_idname, icon="ADD")
+        header, body = layout.panel("print_decal_advanced", default_closed=True)
+        header.label(text="Advanced")
+        if body:
+            body.prop(new, "mode", text="")
+
+
+classes = (DecalSettings, NewDecalSettings, DecalPreferences, PRINTDECAL_OT_add,
+           PRINTDECAL_OT_rotate, PRINTDECAL_OT_refit, PRINTDECAL_OT_remove,
+           PRINTDECAL_PT_panel)
+
+
+def register():
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    bpy.types.Image.print_decal = PointerProperty(type=DecalSettings)
+    bpy.types.Scene.print_decal_new = PointerProperty(type=NewDecalSettings)
+
+
+def unregister():
+    del bpy.types.Scene.print_decal_new
+    del bpy.types.Image.print_decal
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
