@@ -1,12 +1,12 @@
 schema_version = "1.0.0"
 
-id = "print_decals"
-version = "0.3.0"
-name = "Print Decals"
+id = "decal_press"
+version = "0.4.0"
+name = "Decal Press"
 tagline = "Text and image decals on faces, for full-color 3D printing"
 maintainer = "Calvin Young <github.com/calvin-young>"
 type = "add-on"
-website = "https://github.com/calvin-young/blender-print-decals"
+website = "https://github.com/calvin-young/decal-press"
 
 tags = ["Mesh", "Material", "UV"]
 

@@ -1,44 +1,74 @@
-# Print Decals (working name)
+# Decal Press
 
-A Blender add-on that puts text or an image on selected faces as a texture, for full-color 3D printing
-(e.g. HP MJF 580): legible labels and logos with no embossing or engraving.
+A Blender add-on that puts text or an image on selected faces as a texture, for full-color 3D
+printing (e.g. HP MJF 580): legible labels and logos with no embossing or engraving.
+
+![Decal Press in the Material tab, with a text decal on Suzanne](docs/images/material-tab.png)
+
+## Features
+
+- **Text decals** that redraw as you type, sized to fill the faces (as tall as they allow, or as
+  wide when the text is long). Bundled Nunito ExtraBold font, or any TTF/OTF.
+- **Image decals** from a file or a loaded image, with one color made transparent (tolerance and
+  softness), e.g. to drop a white background.
+- **Layered over the material** by default: the faces keep their own color or texture and the decal
+  sits on top, which exports as a layered 3MF. *Replace Material* is there for tools that can't
+  read those.
+- **Fits awkward faces:** the decal goes in the largest clear area inside the selection (round,
+  triangular, L-shaped, curved), lined up with the faces' straight sides. **Offset**, **Rotation**
+  and **Scale** adjust it afterwards.
+- Everything is packed into the .blend and survives saving.
+
+![Decals on a cylinder cap, an L-shaped plate, a triangle, Suzanne, a sphere and a turned, scaled one](docs/images/shapes.png)
+
+## Install
+
+Download the zip from [Releases](https://github.com/calvin-young/decal-press/releases), then in
+Blender: *Edit → Preferences → Get Extensions → ⌄ → Install from Disk*.
 
 ## Use
 
-1. In Edit Mode, select the face (or coplanar faces).
-2. 3D Viewport sidebar (N) → **Decal** tab → *New Decal on Selected Faces*: pick **Text** and type,
-   or **Image** and pick or open one, then **Add Decal**.
+1. In Edit Mode, select the faces for the decal.
+2. *Properties → Material* tab → **Decal Press** panel → *New Decal on Selected Faces*: pick
+   **Text** and type, or **Image** and pick or open one, then **Add Decal**.
 3. Select a decal's face again to edit it: text, color, font, margin, resolution; for images,
-   **Remove Color** makes one color transparent (tolerance and softness). Changes redraw it in place.
+   **Remove Color**. Changes redraw it in place.
+4. Place it: **Fit** (*Clear Area*, or *Whole Selection* to fill the rectangle around the faces),
+   **Rotate 90°** to run it along the other side, then **Offset** (mm), **Rotation** and **Scale**.
+   **Refit** after editing the geometry; **×** removes the decal.
 
-The decal is as tall as the face allows, or as wide when it's too long, with a margin around it.
-**Rotate 90°** turns it, **Refit** remaps it after you edit the geometry, **×** removes it.
+The panel sits near the bottom of the Material tab; drag its header to move it higher.
 
 ## How it works
 
-By default a decal is a **texture layer** over the face's own material: the selected faces get a copy
-of their material in which a Mix node (factor = the decal's alpha) blends the decal over the Base
-Color, read through its own UV map (`UVMap Layer 1`, ...). [blender-3mf-io](https://github.com/calvin-young/blender-3mf-io)
-(layered-textures branch) exports that as a layered 3MF (`multiproperties`). Netfabb can't keep
-layered textures, so *Advanced → Replace Material* gives the faces an opaque material of their own
-instead (the decal drawn on a background color).
-
 Each decal is its own image (`Decal_<text>`, the name the 3MF texture gets), packed into the .blend
-with its settings, so it survives saves. Image sources are packed too. Text is drawn with Blender's
-own `blf` module (no PIL). 1 Blender unit = 1 mm.
+with its settings. By default the selected faces get a copy of their material in which a Mix node
+(factor = the decal's alpha) blends the decal over the Base Color, read through its own UV map
+(`UVMap Layer 1`, ...). [blender-3mf-io](https://github.com/calvin-young/blender-3mf-io)
+(layered-textures branch) exports that as a layered 3MF (`multiproperties`). *Advanced → Replace
+Material* instead gives the faces an opaque material with the decal drawn on a background color,
+which defaults to the faces' previous color.
 
-The default font is Nunito Black, bundled under the SIL Open Font License (`print_decals/fonts/`). Set
-another in the add-on preferences or per decal; a font that fails to load or draw falls back to the
-bundled one, then to a bold system font, then to Blender's own, with a warning on the decal.
-
-In *Replace Material* mode the background defaults to the face's previous color: its Principled Base
-Color when that's a plain color, else its viewport display color.
+The UVs are a flat projection along the selection's average normal, so a strongly curved selection
+stretches the decal where the surface turns away. See [docs/DECISIONS.md](docs/DECISIONS.md) for
+how the fit works and why. Text is drawn with Blender's own `blf` module. 1 Blender unit = 1 mm.
 
 ## Status
 
-0.3.0. Tested on Blender 5.2.3 only. Declared for 4.5 and newer (`blf.bind_imbuf` first appears in
-the 4.5 release notes); 4.5 is untested. Written by Claude (Anthropic) at Calvin Young's request.
+0.4.0, in development. Tested on Blender 5.2.3 only; declared for 4.5 and newer (`blf.bind_imbuf`
+first appears in the 4.5 release notes), but 4.5 is untested
+([issue](https://github.com/calvin-young/decal-press/issues)). Not yet printed from a file
+exported by this add-on.
+
+Written almost entirely by Claude (Anthropic) in Claude Code; Calvin Young sets the direction,
+tests it and polices the interface. See [docs/PROMPT_STATS.md](docs/PROMPT_STATS.md).
+
+## Contributing
+
+Issues and finished, tested pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+AI agents: start with [AGENTS.md](AGENTS.md).
 
 ## License
 
-GPL-3.0-or-later.
+GPL-3.0-or-later. The bundled Nunito font is under the SIL Open Font License
+(`decal_press/fonts/OFL.txt`).
