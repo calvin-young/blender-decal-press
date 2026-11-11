@@ -58,6 +58,18 @@ repo and pushed. Current state and next steps go here, the reasons behind decisi
 - Open: the maintainer's test on real parts; a decal 3MF in Magics/SmartStream and on the 580;
   Blender 4.5 (issue); curved selections (issue).
 
+- **Owner's feedback, 2026-11-11 (file as issues once the repo is pushed):**
+  1. Images on Suzanne with a Subdivision Surface modifier distort oddly. Fix if easy; otherwise
+     document as a known limitation.
+  2. The Resolution setting is confusing: text on a default cube at radius 1 or 100 should look the
+     same. Pick the raster size from the decal's size on the part (legible at print resolution),
+     or explain in the UI why a setting is needed.
+  3. In Solid viewport shading decals are invisible, so a part could be printed with a decal nobody
+     knew about. Show that decals exist in Solid mode (an outline, a badge, a list).
+  4. A preference for where the panel lives (Material tab, sidebar, Scene tab), the same in all the
+     owner's add-ons (calvin-young/blender-bucket-builder#38).
+- **Not pushed yet:** the GitHub repo exists but is empty; the owner's token has no access to it (403).
+
 ## Before you change things
 
 - Read [docs/DECISIONS.md](docs/DECISIONS.md). The roadmap is in
