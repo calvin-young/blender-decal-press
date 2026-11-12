@@ -68,6 +68,9 @@ repo and pushed. Current state and next steps go here, the reasons behind decisi
      knew about. Show that decals exist in Solid mode (an outline, a badge, a list).
   4. A preference for where the panel lives (Material tab, sidebar, Scene tab), the same in all the
      owner's add-ons (calvin-young/blender-bucket-builder#38).
+- **Audit, 2026-11-12:** [docs/AUDIT.md](docs/AUDIT.md) has ranked bugs (start with B1: objects with no
+  material), a recommendation for each of the four items above, and the order to build in.
+  Nothing in it is implemented yet.
 - **Not pushed yet:** the GitHub repo exists but is empty; the owner's token has no access to it (403).
 
 ## Before you change things
