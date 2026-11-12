@@ -77,6 +77,8 @@ repo and pushed. Current state and next steps go here, the reasons behind decisi
      Also wanted as an export option in the 3MF exporter.
   6. Placement on the surface without choosing faces is good, but keep an exact mode (faces chosen
      by hand) and let the user switch between the two.
+- **Vision, 2026-11-12:** [docs/VISION.md](docs/VISION.md) stages the work as milestones 0.5 to 1.0
+  (proposed, not confirmed by the owner). Item 5 (Flatten) is 0.6, item 6 (two placement modes) is 0.7.
 - **Not pushed yet:** the GitHub repo exists but is empty; the owner's token has no access to it (403).
 
 ## Before you change things
