@@ -71,6 +71,12 @@ repo and pushed. Current state and next steps go here, the reasons behind decisi
 - **Audit, 2026-11-12:** [docs/AUDIT.md](docs/AUDIT.md) has ranked bugs (start with B1: objects with no
   material), a recommendation for each of the four items above, and the order to build in.
   Nothing in it is implemented yet.
+- **Owner's feedback, 2026-11-12, on the audit's Direction:**
+  5. A "Flatten" button, in the Photoshop sense: bake the decal layers into the part's base texture,
+     so the part has one diffuse image and nothing is lost in software that ignores layers (Netfabb).
+     Also wanted as an export option in the 3MF exporter.
+  6. Placement on the surface without choosing faces is good, but keep an exact mode (faces chosen
+     by hand) and let the user switch between the two.
 - **Not pushed yet:** the GitHub repo exists but is empty; the owner's token has no access to it (403).
 
 ## Before you change things
