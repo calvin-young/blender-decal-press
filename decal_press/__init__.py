@@ -30,8 +30,14 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty,
 from mathutils import Vector
 
 MAX_PIXELS = 8192  # longest image side
+MAX_TOTAL_PIXELS = 16_000_000  # whole text image, about 64 MB as floats
+PRINT_PIXELS_PER_MM = 24.0  # about 600 dpi, finer than full-color printers resolve
+MIN_TEXT_PIXELS = 256  # short side of a text image, so small text stays sharp on screen
+LEGIBLE_MM = 1.5  # letters smaller than this may not print legibly (a guess, unconfirmed)
+UV_MAP_LIMIT = 8  # Blender's limit per mesh
 MEASURE_SIZE = 200  # font size used to measure the ink box
 BASE_KEY = "decal_press_base"  # material custom property: the material it was copied from
+MADE_KEY = "decal_press_made"  # material custom property: made by Decal Press
 
 # Bundled default: Nunito ExtraBold (SIL Open Font License, see fonts/OFL.txt),
 # a static instance of the Nunito variable font at weight 800.
@@ -141,10 +147,27 @@ def _ink_box(fid, text):
     return xs.min() - pad, xs.max() + 1 - pad, ys.min() - pad, ys.max() + 1 - pad
 
 
+def text_pixels_per_mm(w_mm, h_mm):
+    """Image resolution for a text decal of w_mm x h_mm.
+
+    At least print resolution, more for small decals so their short side gets
+    MIN_TEXT_PIXELS, within the size limits. So the same text looks the same
+    on a 2 mm face and a 200 mm one.
+    """
+    ppm = max(PRINT_PIXELS_PER_MM, MIN_TEXT_PIXELS / min(w_mm, h_mm))
+    return min(ppm, MAX_PIXELS / max(w_mm, h_mm), math.sqrt(MAX_TOTAL_PIXELS / (w_mm * h_mm)))
+
+
 def _text_pixels(s):
     w_mm, h_mm = max(s.width_mm, 1e-3), max(s.height_mm, 1e-3)
-    ppm = min(s.pixels_per_mm, MAX_PIXELS / max(w_mm, h_mm))
-    width, height = max(4, round(w_mm * ppm)), max(4, round(h_mm * ppm))
+    ppm = text_pixels_per_mm(w_mm, h_mm)
+    # Keep the image's aspect ratio exactly the decal's, or the text stretches.
+    if w_mm >= h_mm:
+        height = max(4, round(h_mm * ppm))
+        width = max(4, round(height * w_mm / h_mm))
+    else:
+        width = max(4, round(w_mm * ppm))
+        height = max(4, round(width * h_mm / w_mm))
     alpha = np.zeros((height, width), dtype=np.float32)
     fid = _font_id(s.font_path, s.id_data.as_pointer())
     text_box = _ink_box(fid, s.text) if s.text.strip() else None
@@ -162,6 +185,10 @@ def _text_pixels(s):
             y = (height - (y1 - y0) * scale) / 2 - y0 * scale
             alpha = _render_alpha(fid, s.text, MEASURE_SIZE * scale,
                                   width, height, x, y)
+            # Capital letter height on the part.
+            s.letter_mm = ref[3] * scale * h_mm / height
+    if not text_box:
+        s.letter_mm = 0.0
     rgba = np.empty((height, width, 4), dtype=np.float32)
     rgba[..., :3] = np.array(s.text_color, dtype=np.float32)
     rgba[..., 3] = alpha
@@ -307,9 +334,6 @@ class DecalSettings(bpy.types.PropertyGroup):
         name="Margin", min=0.0, max=0.45, default=0.1, subtype="FACTOR",
         update=_on_change,
         description="Space around the decal, as a fraction of the face's short side")
-    pixels_per_mm: FloatProperty(
-        name="Resolution", min=1.0, max=100.0, default=20.0, update=_on_change,
-        description="Text image pixels per mm (1 Blender unit = 1 mm)")
     source: PointerProperty(name="Image", type=bpy.types.Image, poll=_not_decal,
                             update=_on_content)
     use_key: BoolProperty(name="Remove Color", default=False, update=_on_change,
@@ -336,6 +360,7 @@ class DecalSettings(bpy.types.PropertyGroup):
     rotation: IntProperty(min=0, max=3, default=0)  # quarter turns of the fit frame
     fit_rect: FloatVectorProperty(size=4)  # (u0, v0, u1, v1) in mm in the fit frame
     width_mm: FloatProperty(default=10.0)
+    letter_mm: FloatProperty(default=0.0)  # capital letter height of a text decal
     height_mm: FloatProperty(default=10.0)
     uv_map: StringProperty()
     show_expanded: BoolProperty(default=True)
@@ -394,10 +419,16 @@ def decal_materials(img):
     return [m for m in bpy.data.materials if any(n.image == img for n in decal_nodes(m))]
 
 
-def _free_layer_uv(mat):
-    used = set()
-    if mat and mat.node_tree:
-        used = {n.uv_map for n in mat.node_tree.nodes if n.type == "UVMAP"}
+def _uv_maps_in_use(obj):
+    """UV maps read by any material on obj (decal layers and the user's own)."""
+    return {n.uv_map for slot in obj.material_slots
+            if slot.material and slot.material.node_tree
+            for n in slot.material.node_tree.nodes if n.type == "UVMAP"}
+
+
+def _free_layer_uv(obj):
+    """A UV map name no material on obj reads, so a new decal can't move another's."""
+    used = _uv_maps_in_use(obj)
     k = 1
     while f"UVMap Layer {k}" in used:
         k += 1
@@ -411,6 +442,7 @@ def layered_copy(base, img, uv_map):
     else:
         mat = base.copy()
         mat[BASE_KEY] = mat.get(BASE_KEY) or base
+    mat[MADE_KEY] = True
     mat.name = f"{(base.name if base else 'Material')}+{img.name}"
     nt = mat.node_tree
     bsdf = _principled(mat)
@@ -440,6 +472,7 @@ def layered_copy(base, img, uv_map):
 
 def replace_material(img):
     mat = _new_material(img.name)
+    mat[MADE_KEY] = True
     nt = mat.node_tree
     bsdf = _principled(mat)
     tex = nt.nodes.new("ShaderNodeTexImage")
@@ -499,6 +532,67 @@ def _slot_index(obj, mat):
             return i
     obj.data.materials.append(mat)
     return len(obj.material_slots) - 1
+
+
+def _prepare_slots(obj):
+    """Give every face a real material slot before decal slots are added.
+
+    Faces of an object with no slots, or with a material index past the last
+    slot, show the last slot's material. A decal slot appended after them
+    would then show on all of those faces.
+    """
+    if not obj.material_slots:
+        obj.data.materials.append(None)
+    last = len(obj.material_slots) - 1
+    bm = bmesh.from_edit_mesh(obj.data)
+    changed = False
+    for f in bm.faces:
+        if f.material_index > last:
+            f.material_index = last
+            changed = True
+    if changed:
+        bmesh.update_edit_mesh(obj.data)
+
+
+def _face_indices(obj):
+    """Material index of every face, from Edit Mode data when editing."""
+    if obj.mode == "EDIT":
+        return [f.material_index for f in bmesh.from_edit_mesh(obj.data).faces]
+    return [p.material_index for p in obj.data.polygons]
+
+
+def _move_faces(obj, old, new):
+    """Move the faces in slot old to slot new."""
+    if obj.mode == "EDIT":
+        bm = bmesh.from_edit_mesh(obj.data)
+        for f in bm.faces:
+            if f.material_index == old:
+                f.material_index = new
+        bmesh.update_edit_mesh(obj.data)
+    else:
+        for p in obj.data.polygons:
+            if p.material_index == old:
+                p.material_index = new
+
+
+def _drop_unused_decal_slots(obj):
+    """Remove slots holding a decal material that no face uses any more."""
+    used = set(_face_indices(obj))
+    for i in reversed(range(len(obj.material_slots))):
+        mat = obj.material_slots[i].material
+        if i in used or mat is None or not (decal_nodes(mat) or MADE_KEY in mat
+                                             or BASE_KEY in mat):
+            continue
+        obj.data.materials.pop(index=i)
+        if obj.mode == "EDIT":
+            # pop() renumbers faces in Object Mode only.
+            bm = bmesh.from_edit_mesh(obj.data)
+            for f in bm.faces:
+                if f.material_index > i:
+                    f.material_index -= 1
+            bmesh.update_edit_mesh(obj.data)
+        if mat.users == 0:
+            bpy.data.materials.remove(mat)
 
 
 def _hull(points):
@@ -794,9 +888,32 @@ class DECALPRESS_OT_add(bpy.types.Operator):
         if not selected:
             self.report({"WARNING"}, "Select the faces for the decal")
             return {"CANCELLED"}
+        # Check everything that can fail before changing anything.
+        nmat = obj.matrix_world.to_3x3().inverted_safe().transposed()
+        normal, total = Vector(), 0.0
+        for f in selected:
+            n = (nmat @ f.normal) * f.calc_area()
+            normal += n
+            total += n.length
+        if total < 1e-12:
+            self.report({"WARNING"}, "The selected faces have no area")
+            return {"CANCELLED"}
+        if normal.length < 0.2 * total:
+            self.report({"WARNING"}, "The selected faces point in all directions: "
+                        "select faces on one side of the part")
+            return {"CANCELLED"}
+        if new.mode == "LAYER":
+            uv_map = _free_layer_uv(obj)
+            if uv_map not in obj.data.uv_layers and len(obj.data.uv_layers) >= UV_MAP_LIMIT:
+                self.report({"WARNING"}, f"This mesh already has {UV_MAP_LIMIT} UV maps, "
+                            "Blender's limit: remove a decal or a UV map first")
+                return {"CANCELLED"}
+
+        _prepare_slots(obj)
+        bm = bmesh.from_edit_mesh(obj.data)  # slot changes can rebuild it
+        selected = [f for f in bm.faces if f.select]
         slots = obj.material_slots
-        bases = {f.index: (slots[f.material_index].material
-                           if f.material_index < len(slots) else None) for f in selected}
+        bases = {f.index: slots[f.material_index].material for f in selected}
 
         img = bpy.data.images.new("Decal", 4, 4, alpha=True)
         img.alpha_mode = "STRAIGHT"
@@ -811,7 +928,7 @@ class DECALPRESS_OT_add(bpy.types.Operator):
         img.name = decal_name(s)
 
         if new.mode == "LAYER":
-            s.uv_map = _free_layer_uv(first)
+            s.uv_map = uv_map
             copies = {}
             for base in set(bases.values()):
                 copies[base] = layered_copy(base, img, s.uv_map)
@@ -827,11 +944,12 @@ class DECALPRESS_OT_add(bpy.types.Operator):
         bm.faces.ensure_lookup_table()
         for fi, mat in targets.items():
             bm.faces[fi].material_index = index[mat]
+        bmesh.update_edit_mesh(obj.data)
+        _drop_unused_decal_slots(obj)  # a decal moved onto every face of another one
         s.is_decal = True
-        if not refit(img, objects=[obj]):
-            self.report({"WARNING"}, "Could not fit the decal: faces have no area")
-            return {"CANCELLED"}
-        obj.active_material_index = next(iter(index.values()))
+        refit(img, objects=[obj])
+        obj.active_material_index = next(i for i, slot in enumerate(obj.material_slots)
+                                         if slot.material in targets.values())
         return {"FINISHED"}
 
 
@@ -880,14 +998,26 @@ class DECALPRESS_OT_remove(_DecalOperator, bpy.types.Operator):
         img = self.decal(context)
         if img is None:
             return {"CANCELLED"}
-        obj = context.active_object
+        s = img.decal_press
+        objects = decal_objects(img)
         for mat in decal_materials(img):
             base = mat.get(BASE_KEY)
-            empty = img.decal_press.mode == "REPLACE" or remove_from_material(mat, img)
-            if empty:
-                for slot in obj.material_slots:
-                    if slot.material == mat:
-                        slot.material = base if isinstance(base, bpy.types.Material) else None
+            base = base if isinstance(base, bpy.types.Material) else None
+            if s.mode == "REPLACE" or remove_from_material(mat, img):
+                # Nothing left on these faces: give them back their own material.
+                for obj in objects:
+                    for i, slot in enumerate(obj.material_slots):
+                        if slot.material == mat:
+                            _move_faces(obj, i, _slot_index(obj, base))
+            else:
+                mat.name = "+".join([_base_name(mat)] + [n.image.name for n in decal_nodes(mat)])
+        for obj in objects:
+            _drop_unused_decal_slots(obj)
+            uv = obj.data.uv_layers.get(s.uv_map)
+            if (uv and re.fullmatch(r"UVMap Layer \d+", uv.name)
+                    and uv.name not in _uv_maps_in_use(obj)):
+                obj.data.uv_layers.remove(uv)
+        for mat in decal_materials(img):
             if mat.users == 0:
                 bpy.data.materials.remove(mat)
         if img.users == 0:
@@ -920,7 +1050,6 @@ def _draw_decal(layout, img):
         warning = font_warnings.get(img.as_pointer())
         if warning:
             col.label(text=warning, icon="ERROR")
-        col.prop(s, "pixels_per_mm")
     else:
         col.template_ID(s, "source", open="image.open")
         col.prop(s, "use_key")
