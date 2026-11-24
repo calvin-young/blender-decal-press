@@ -6,7 +6,7 @@ name = "Decal Press"
 tagline = "Text and image decals on faces, for full-color 3D printing"
 maintainer = "Calvin Young <github.com/calvin-young>"
 type = "add-on"
-website = "https://github.com/calvin-young/decal-press"
+website = "https://github.com/calvin-young/blender-decal-press"
 
 tags = ["Mesh", "Material", "UV"]
 

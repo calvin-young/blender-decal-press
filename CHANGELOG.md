@@ -3,6 +3,10 @@
 Version history of Decal Press. Builds are GitHub pre-releases until the owner signals a full
 release.
 
+## Unreleased
+
+- The manifest's website points to the renamed repo, blender-decal-press.
+
 ## 0.5.0 (2026-11-24)
 
 Fixes, from a bug hunt over 8 shapes, 4 sizes (2 to 2000 mm) and 6 transforms (scale applied and

@@ -72,12 +72,11 @@ repo and pushed. Current state and next steps go here, the reasons behind decisi
 - **0.5.0 (2026-11-24)** fixed the owner's "projected through, inverted on the back" (objects
   without a material slot) and the other bugs from a bug hunt, and delivered the 2026-11-11 feedback
   (Solid shading, no Resolution setting, panel location, modifier note). See CHANGELOG.
-- **Issues:** `gh` can't see this repo yet (404, although git pushes). The bugs found and fixed,
-  and the open items, are in [docs/ISSUES_PENDING.md](docs/ISSUES_PENDING.md): file them as GitHub
-  issues once `gh` has access (close the fixed ones with a link to the commit), then delete the file.
+- **Repo:** `calvin-young/blender-decal-press` (renamed from `decal-press`; git follows the
+  redirect, `gh` needs the new name). Issues #1-#9 were found and fixed in 0.5.0, #10-#18 are open.
 - **Next (VISION.md):** the export test (a layered decal 3MF in SmartStream and MiniMagics in the
   Windows VM, then a print); `decals_on(obj)` and the API for Bucket Builder's labeled copies
-  (Bucket Builder may contact this project about 2D labels); 0.6 Flatten; 0.7 Placement.
+  (#13; Bucket Builder may contact this project about 2D labels); 0.6 Flatten; 0.7 Placement.
 - [docs/AUDIT.md](docs/AUDIT.md) (2026-11-12) and [docs/VISION.md](docs/VISION.md) hold the review
   and the plan. AUDIT's B1 to B6, P1, P3 and the four feedback items are done in 0.5.0.
 - Open: the maintainer's test on real parts; Blender 4.5 untested; curved selections.
@@ -85,7 +84,7 @@ repo and pushed. Current state and next steps go here, the reasons behind decisi
 ## Before you change things
 
 - Read [docs/DECISIONS.md](docs/DECISIONS.md). The roadmap is in
-  [GitHub Issues](https://github.com/calvin-young/decal-press/issues).
+  [GitHub Issues](https://github.com/calvin-young/blender-decal-press/issues).
 - Update [docs/PROMPT_STATS.md](docs/PROMPT_STATS.md) at the end of each working session.
 
 ## Data

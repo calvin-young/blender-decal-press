@@ -26,7 +26,7 @@ printing (e.g. HP MJF 580): legible labels and logos with no embossing or engrav
 
 ## Install
 
-Download the zip from [Releases](https://github.com/calvin-young/decal-press/releases), then in
+Download the zip from [Releases](https://github.com/calvin-young/blender-decal-press/releases), then in
 Blender: *Edit → Preferences → Get Extensions → ⌄ → Install from Disk*.
 
 ## Use
@@ -63,7 +63,7 @@ how the fit works and why. Text is drawn with Blender's own `blf` module. 1 Blen
 
 0.5.0, in development. Tested on Blender 5.2.3 only; declared for 4.5 and newer (`blf.bind_imbuf`
 first appears in the 4.5 release notes), but 4.5 is untested
-([issue](https://github.com/calvin-young/decal-press/issues)). Not yet printed from a file
+([issue](https://github.com/calvin-young/blender-decal-press/issues)). Not yet printed from a file
 exported by this add-on. Version history: [CHANGELOG.md](CHANGELOG.md).
 
 Written almost entirely by Claude (Anthropic) in Claude Code; Calvin Young sets the direction,
