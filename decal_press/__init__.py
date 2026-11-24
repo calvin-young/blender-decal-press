@@ -14,6 +14,7 @@ Each decal is its own image, packed into the .blend. Its settings live on that
 image and the image is redrawn whenever a setting changes.
 """
 
+import atexit
 import math
 import os
 import re
@@ -22,18 +23,24 @@ import tempfile
 import blf
 import bmesh
 import bpy
+import gpu
 import imbuf
 import numpy as np
+from bpy.app.handlers import persistent
+from gpu_extras.batch import batch_for_shader
 from bpy.props import (BoolProperty, EnumProperty, FloatProperty,
                        FloatVectorProperty, IntProperty, PointerProperty,
                        StringProperty)
 from mathutils import Vector
 
 MAX_PIXELS = 8192  # longest image side
-MAX_TOTAL_PIXELS = 16_000_000  # whole text image, about 64 MB as floats
-PRINT_PIXELS_PER_MM = 24.0  # about 600 dpi, finer than full-color printers resolve
-MIN_TEXT_PIXELS = 256  # short side of a text image, so small text stays sharp on screen
-LEGIBLE_MM = 1.5  # letters smaller than this may not print legibly (a guess, unconfirmed)
+MAX_TOTAL_PIXELS = 16_000_000  # whole text image, about 256 MB while drawing
+# Full-color and Dual Tone MJF print color at the printhead's 600 dpi (0.042 mm),
+# and ink bleed blurs it to about one PA 12 grain (55-60 um), so no print shows
+# detail finer than that. Two texels per printhead dot is the most a decal ever needs.
+PRINT_PIXELS_PER_MM = 48.0  # about 1200 dpi
+MIN_TEXT_PIXELS = 256  # short side of a text image, so tiny decals stay sharp on screen
+LEGIBLE_MM = 2.0  # smallest letter height the owner aims for on printed parts
 UV_MAP_LIMIT = 8  # Blender's limit per mesh
 MEASURE_SIZE = 200  # font size used to measure the ink box
 BASE_KEY = "decal_press_base"  # material custom property: the material it was copied from
@@ -53,6 +60,7 @@ FONT_CANDIDATES = (
 )
 
 _font_ids = {}  # path -> blf font id, or None when it didn't load or draw
+_drawn = {}  # decal image session_uid -> settings its pixels were drawn with
 font_warnings = {}  # decal image pointer -> message, shown in the panel
 
 
@@ -111,7 +119,21 @@ def decal_name(s):
 # ---------------------------------------------------------------------------
 # Drawing
 
+_coverage = {}  # (font id, text, size, width, height, x, y) -> last coverage drawn
+_ink_boxes = {}  # (font id, text) -> ink box
+
+
 def _render_alpha(fid, text, size, width, height, x, y):
+    """Coverage (h x w) of text drawn into an image, cached for redraws that keep it."""
+    key = (fid, text, round(size, 4), width, height, round(x, 3), round(y, 3))
+    if key not in _coverage:
+        if len(_coverage) > 8:
+            _coverage.clear()
+        _coverage[key] = _draw_alpha(fid, text, size, width, height, x, y)
+    return _coverage[key].copy()
+
+
+def _draw_alpha(fid, text, size, width, height, x, y):
     """Draw text into an offscreen buffer and return its coverage (h x w)."""
     buf = imbuf.new((width, height))
     blf.size(fid, size)
@@ -119,10 +141,12 @@ def _render_alpha(fid, text, size, width, height, x, y):
         blf.color(fid, 1.0, 1.0, 1.0, 1.0)
         blf.position(fid, x, y, 0.0)
         blf.draw_buffer(fid, text)
-    # imbuf has no pixel access from Python, so round-trip through a PNG.
-    fd, path = tempfile.mkstemp(suffix=".png")
+    # imbuf has no pixel access from Python, so round-trip through a file:
+    # BMP, which keeps alpha and writes 15x faster than PNG.
+    fd, path = tempfile.mkstemp(suffix=".bmp")
     os.close(fd)
     try:
+        buf.file_type = "BMP"
         imbuf.write(buf, filepath=path)
         img = bpy.data.images.load(path, check_existing=False)
         try:
@@ -137,10 +161,19 @@ def _render_alpha(fid, text, size, width, height, x, y):
 
 def _ink_box(fid, text):
     """Ink extents (x0, x1, y0, y1) relative to the pen origin at MEASURE_SIZE."""
+    key = (fid, text)
+    if key not in _ink_boxes:
+        if len(_ink_boxes) > 256:
+            _ink_boxes.clear()
+        _ink_boxes[key] = _measure_ink(fid, text)
+    return _ink_boxes[key]
+
+
+def _measure_ink(fid, text):
     blf.size(fid, MEASURE_SIZE)
     pad = MEASURE_SIZE
     width = int(blf.dimensions(fid, text)[0]) + 2 * pad
-    alpha = _render_alpha(fid, text, MEASURE_SIZE, width, 3 * pad, pad, pad)
+    alpha = _draw_alpha(fid, text, MEASURE_SIZE, width, 3 * pad, pad, pad)
     ys, xs = np.nonzero(alpha > 0.02)
     if not len(xs):
         return None
@@ -241,21 +274,31 @@ def decal_pixels(s):
     return rgba
 
 
+def _drawn_with(s):
+    """Everything that changes a decal's pixels."""
+    return (s.kind, s.mode, s.text, tuple(s.text_color), tuple(s.background_color),
+            s.font_path, round(s.margin, 6), s.source.name if s.source else "", s.use_key,
+            tuple(s.key_color), round(s.key_tolerance, 6), round(s.key_softness, 6),
+            round(s.width_mm, 6), round(s.height_mm, 6))
+
+
 def update_decal(img):
-    """Redraw, rename and repack decal image img."""
+    """Redraw and rename decal image img. It's packed when the file is saved."""
     s = img.decal_press
+    _drawn[img.session_uid] = _drawn_with(s)
     if s.kind == "IMAGE" and s.source and s.source.source == "FILE" and not s.source.packed_file:
         s.source.pack()  # keep the original with the .blend, for later edits
     rgba = decal_pixels(s)
     height, width = rgba.shape[:2]
     if tuple(img.size) != (width, height):
-        img.scale(width, height)
+        # A blank image of the new size: scale() would resample pixels about to be replaced.
+        img.source = "GENERATED"
+        img.generated_width, img.generated_height = width, height
     name = decal_name(s)
     if re.sub(r"\.\d{3}$", "", img.name) != name:
         img.name = name
     img.pixels.foreach_set(rgba.ravel())
     img.update()
-    img.pack()
     for mat in decal_materials(img):
         if s.mode == "REPLACE":
             mat.diffuse_color = (*(_lin(c) for c in s.background_color), 1.0)
@@ -309,6 +352,8 @@ FITS = [("CLEAR", "Clear Area",
          "Fit the decal into the largest area inside the faces", 0),
         ("BOUNDS", "Whole Selection",
          "Fit the decal to the rectangle around the faces", 1)]
+SIZES = [("FILL", "Fill", "As big as the faces allow, then Scale", 0),
+         ("HEIGHT", "Letter Height", "Capital letters this tall, in mm", 1)]
 MODES = [("LAYER", "Layer over Material",
           "Blend the decal over the face's own material (layered 3MF; not for Netfabb)", 0),
          ("REPLACE", "Replace Material",
@@ -332,7 +377,7 @@ class DecalSettings(bpy.types.PropertyGroup):
         description="TTF/OTF font file. Empty uses the default font from the add-on preferences")
     margin: FloatProperty(
         name="Margin", min=0.0, max=0.45, default=0.1, subtype="FACTOR",
-        update=_on_change,
+        update=_on_scale,
         description="Space around the decal, as a fraction of the face's short side")
     source: PointerProperty(name="Image", type=bpy.types.Image, poll=_not_decal,
                             update=_on_content)
@@ -357,6 +402,10 @@ class DecalSettings(bpy.types.PropertyGroup):
     scale: FloatProperty(
         name="Scale", min=0.05, max=20.0, soft_max=4.0, default=1.0, update=_on_scale,
         description="Size relative to the fitted size")
+    size_mode: EnumProperty(items=SIZES, default="FILL", name="Size", update=_on_scale)
+    letter_height: FloatProperty(
+        name="Letter Height", min=0.1, soft_max=50.0, default=5.0, precision=2,
+        update=_on_scale, description="Height of the capital letters on the part, in mm")
     rotation: IntProperty(min=0, max=3, default=0)  # quarter turns of the fit frame
     fit_rect: FloatVectorProperty(size=4)  # (u0, v0, u1, v1) in mm in the fit frame
     width_mm: FloatProperty(default=10.0)
@@ -381,9 +430,23 @@ class DecalPreferences(bpy.types.AddonPreferences):
         name="Default Font", subtype="FILE_PATH",
         description="Font for text decals that don't set their own. "
                     "Empty uses the bundled Nunito ExtraBold")
+    panel_location: EnumProperty(
+        name="Panel", default="PROPERTIES", update=lambda self, ctx: _register_panels(),
+        items=[("PROPERTIES", "Material Properties", "Under the material slots in the "
+                "Properties editor's Material tab", 0),
+               ("SIDEBAR", "Sidebar", "In a tab of the 3D Viewport's sidebar (N)", 1)])
+    sidebar_tab: StringProperty(
+        name="Sidebar Tab", default="Decal", update=lambda self, ctx: _register_panels(),
+        description="Sidebar tab for the panel. Give several add-ons the same name to share a tab")
 
     def draw(self, context):
-        self.layout.prop(self, "default_font")
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "default_font")
+        layout.prop(self, "panel_location", expand=True)
+        row = layout.row()
+        row.active = self.panel_location == "SIDEBAR"
+        row.prop(self, "sidebar_tab")
 
 
 # ---------------------------------------------------------------------------
@@ -744,18 +807,40 @@ def _clear_rect(tris, width, height, aspect):
     return u0, v0, u1, v1
 
 
+def _text_metrics(s):
+    """(width, height, cap height) of the text's ink at MEASURE_SIZE, or None.
+
+    The height spans a capital and a descender, as the text is drawn.
+    """
+    if s.kind != "TEXT" or not s.text.strip():
+        return None
+    fid = _font_id(s.font_path, s.id_data.as_pointer())
+    box, ref = _ink_box(fid, s.text), _ink_box(fid, "Hg")
+    if not box or not ref:
+        return None
+    return box[1] - box[0], max(box[3], ref[3]) - min(box[2], ref[2]), ref[3]
+
+
 def _content_aspect(s):
     """Width / height of what the decal shows."""
     if s.kind == "IMAGE":
         src = s.source
         return src.size[0] / src.size[1] if src and src.size[1] else 1.0
-    if not s.text.strip():
-        return 1.0
-    fid = _font_id(s.font_path, s.id_data.as_pointer())
-    box, ref = _ink_box(fid, s.text), _ink_box(fid, "Hg")
-    if not box:
-        return 1.0
-    return (box[1] - box[0]) / (max(box[3], ref[3]) - min(box[2], ref[2]))
+    m = _text_metrics(s)
+    return m[0] / m[1] if m else 1.0
+
+
+def _letter_box(s):
+    """Decal size (w, h) in mm for text whose capitals are s.letter_height tall."""
+    m = _text_metrics(s)
+    if m is None:
+        return None
+    ink_w, ink_h, cap = m
+    h_ink = s.letter_height * ink_h / cap
+    w_ink = h_ink * ink_w / ink_h
+    # The margin is a fraction of the short side, as in _text_pixels.
+    short = min(w_ink, h_ink) / (1 - 2 * s.margin)
+    return w_ink + 2 * s.margin * short, h_ink + 2 * s.margin * short
 
 
 def fit_decal(obj, bm, img, search=True):
@@ -801,7 +886,11 @@ def fit_decal(obj, bm, img, search=True):
     u0, v0, u1, v1 = s.fit_rect
     cu = umin + (u0 + u1) / 2 + s.offset[0]
     cv = vmin + (v0 + v1) / 2 + s.offset[1]
-    dw, dh = max((u1 - u0) * s.scale, 1e-3), max((v1 - v0) * s.scale, 1e-3)
+    box = _letter_box(s) if s.kind == "TEXT" and s.size_mode == "HEIGHT" else None
+    if box:
+        dw, dh = box
+    else:
+        dw, dh = max((u1 - u0) * s.scale, 1e-3), max((v1 - v0) * s.scale, 1e-3)
     ca, sa = math.cos(-s.angle), math.sin(-s.angle)
 
     layers = bm.loops.layers.uv
@@ -861,6 +950,16 @@ def active_material(context):
 
 def active_decals(context):
     return [n.image for n in decal_nodes(active_material(context))]
+
+
+def object_decals(obj):
+    """Every decal shown on obj, in slot order."""
+    found = []
+    for slot in obj.material_slots if obj and obj.type == "MESH" else ():
+        for n in decal_nodes(slot.material):
+            if n.image not in found:
+                found.append(n.image)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -965,7 +1064,7 @@ class _DecalOperator:
 class DECALPRESS_OT_rotate(_DecalOperator, bpy.types.Operator):
     """Fit the decal along the other side of its faces"""
     bl_idname = "decal_press.rotate"
-    bl_label = "Rotate 90°"
+    bl_label = "Other Side"
 
     def execute(self, context):
         img = self.decal(context)
@@ -973,6 +1072,29 @@ class DECALPRESS_OT_rotate(_DecalOperator, bpy.types.Operator):
             return {"CANCELLED"}
         img.decal_press.rotation = (img.decal_press.rotation + 1) % 4
         refit(img)
+        return {"FINISHED"}
+
+
+class DECALPRESS_OT_select(_DecalOperator, bpy.types.Operator):
+    """Select the faces this decal is on, in Edit Mode"""
+    bl_idname = "decal_press.select"
+    bl_label = "Select Faces"
+
+    def execute(self, context):
+        img = self.decal(context)
+        obj = context.active_object
+        if img is None or obj is None or obj.type != "MESH":
+            return {"CANCELLED"}
+        slots = {i for i, slot in enumerate(obj.material_slots)
+                 if slot.material and any(n.image == img for n in decal_nodes(slot.material))}
+        if obj.mode != "EDIT":
+            bpy.ops.object.mode_set(mode="EDIT")
+        context.tool_settings.mesh_select_mode = (False, False, True)
+        bm = bmesh.from_edit_mesh(obj.data)
+        for f in bm.faces:
+            f.select_set(f.material_index in slots)
+        bm.select_flush_mode()
+        bmesh.update_edit_mesh(obj.data)
         return {"FINISHED"}
 
 
@@ -1026,18 +1148,184 @@ class DECALPRESS_OT_remove(_DecalOperator, bpy.types.Operator):
 
 
 # ---------------------------------------------------------------------------
-# UI: Properties editor, Material tab
+# Solid shading: draw the decals over their faces, as they will print
 
-def _draw_decal(layout, img):
+SHAPE_MODIFIERS = {"SUBSURF", "MULTIRES", "DISPLACE", "SMOOTH", "LAPLACIANSMOOTH",
+                   "CORRECTIVE_SMOOTH", "SHRINKWRAP", "SIMPLE_DEFORM", "CAST", "WAVE",
+                   "REMESH", "SOLIDIFY"}
+_shader = None
+_batches = {}  # object name -> [(image, batch)]
+_draw_handle = None
+
+
+def _overlay_shader():
+    global _shader
+    if _shader is None:
+        iface = gpu.types.GPUStageInterfaceInfo("decal_press_iface")
+        iface.smooth("VEC2", "uvInterp")
+        info = gpu.types.GPUShaderCreateInfo()
+        info.push_constant("MAT4", "viewProjection")
+        info.push_constant("MAT4", "objectMatrix")
+        info.sampler(0, "FLOAT_2D", "image")
+        info.vertex_in(0, "VEC3", "pos")
+        info.vertex_in(1, "VEC2", "uv")
+        info.vertex_out(iface)
+        info.fragment_out(0, "VEC4", "fragColor")
+        # Pulled a little toward the viewer so it wins against its own face.
+        info.vertex_source(
+            "void main() {"
+            "  uvInterp = uv;"
+            "  gl_Position = viewProjection * objectMatrix * vec4(pos, 1.0);"
+            "  gl_Position.z -= 0.00005 * gl_Position.w;"
+            "}")
+        # Layer decals clip outside the image (extension CLIP), as they print.
+        info.fragment_source(
+            "void main() {"
+            "  if (any(lessThan(uvInterp, vec2(0.0))) || any(greaterThan(uvInterp, vec2(1.0))))"
+            "    discard;"
+            "  vec4 c = texture(image, uvInterp);"
+            "  if (c.a < 0.004) discard;"
+            "  fragColor = c;"
+            "}")
+        _shader = gpu.shader.create_from_info(info)
+    return _shader
+
+
+def _object_batches(obj, depsgraph):
+    if obj.name in _batches:
+        return _batches[obj.name]
+    out = []
+    decals = object_decals(obj)
+    if decals:
+        ev = obj.evaluated_get(depsgraph)
+        me = ev.to_mesh()
+        try:
+            me.calc_loop_triangles()
+            n = len(me.loop_triangles)
+            tri_loops = np.empty(n * 3, dtype=np.int32)
+            me.loop_triangles.foreach_get("loops", tri_loops)
+            tri_mat = np.empty(n, dtype=np.int32)
+            me.loop_triangles.foreach_get("material_index", tri_mat)
+            loop_vert = np.empty(len(me.loops), dtype=np.int32)
+            me.loops.foreach_get("vertex_index", loop_vert)
+            co = np.empty(len(me.vertices) * 3, dtype=np.float32)
+            me.vertices.foreach_get("co", co)
+            co = co.reshape(-1, 3)
+            for img in decals:
+                layer = me.uv_layers.get(img.decal_press.uv_map)
+                slots = [i for i, slot in enumerate(obj.material_slots)
+                         if slot.material and any(nd.image == img
+                                                  for nd in decal_nodes(slot.material))]
+                if layer is None or not slots:
+                    continue
+                loops = tri_loops.reshape(-1, 3)[np.isin(tri_mat, slots)].ravel()
+                if not len(loops):
+                    continue
+                uv = np.empty(len(me.loops) * 2, dtype=np.float32)
+                layer.data.foreach_get("uv", uv)
+                out.append((img, batch_for_shader(
+                    _overlay_shader(), "TRIS",
+                    {"pos": co[loop_vert[loops]], "uv": uv.reshape(-1, 2)[loops]})))
+        finally:
+            ev.to_mesh_clear()
+    _batches[obj.name] = out
+    return out
+
+
+def _draw_solid():
+    context = bpy.context
+    space = context.space_data
+    scene = context.scene
+    if (space is None or space.shading.type != "SOLID"
+            or not getattr(scene, "decal_press_show_solid", True)
+            or not space.overlay.show_overlays):
+        return
+    depsgraph = context.evaluated_depsgraph_get()
+    shader = _overlay_shader()
+    vp = context.region_data.perspective_matrix
+    gpu.state.depth_test_set("LESS_EQUAL")
+    gpu.state.depth_mask_set(False)
+    gpu.state.blend_set("ALPHA")
+    try:
+        for obj in context.visible_objects:
+            if obj.type != "MESH":
+                continue
+            for img, batch in _object_batches(obj, depsgraph):
+                shader.bind()
+                shader.uniform_float("viewProjection", vp)
+                shader.uniform_float("objectMatrix", obj.matrix_world)
+                shader.uniform_sampler("image", gpu.texture.from_image(img))
+                batch.draw(shader)
+    finally:
+        gpu.state.blend_set("NONE")
+        gpu.state.depth_test_set("NONE")
+
+
+@persistent
+def _on_depsgraph(scene, depsgraph):
+    for update in depsgraph.updates:
+        if isinstance(update.id, bpy.types.Object):
+            if update.is_updated_geometry or update.is_updated_shading:
+                _batches.pop(update.id.name, None)
+        elif isinstance(update.id, (bpy.types.Mesh, bpy.types.Material, bpy.types.Image)):
+            _batches.clear()
+            return
+
+
+@persistent
+def _on_load(*_):
+    _batches.clear()
+    _drawn.clear()
+    font_warnings.clear()
+
+
+@persistent
+def _on_save(*_):
+    """Pack decals drawn since the last save, so the .blend carries them."""
+    for img in bpy.data.images:
+        if img.decal_press.is_decal and (img.is_dirty or not img.packed_file):
+            img.pack()
+
+
+@persistent
+def _on_undo(*_):
+    """Undo brings back a decal's settings but not its pixels: redraw what changed."""
+    for img in bpy.data.images:
+        s = img.decal_press
+        if s.is_decal and _drawn.get(img.session_uid, _drawn_with(s)) != _drawn_with(s):
+            update_decal(img)
+    _batches.clear()
+
+
+def _free_gpu():
+    # GPU batches still held when Blender quits show up as unfreed memory.
+    global _shader
+    _batches.clear()
+    _shader = None
+
+
+atexit.register(_free_gpu)
+
+
+def _draw_overlay_toggle(self, context):
+    self.layout.prop(context.scene, "decal_press_show_solid")
+
+
+# ---------------------------------------------------------------------------
+# UI
+
+def _draw_decal(layout, img, on_face=False):
     s = img.decal_press
     box = layout.box()
     row = box.row(align=True)
     row.prop(s, "show_expanded", text="", emboss=False,
              icon="DISCLOSURE_TRI_DOWN" if s.show_expanded else "DISCLOSURE_TRI_RIGHT")
     if s.kind == "TEXT":
-        row.prop(s, "text", text="")
+        row.prop(s, "text", text="", icon="FONT_DATA")
     else:
         row.label(text=img.name, icon="IMAGE_DATA")
+    row.operator(DECALPRESS_OT_select.bl_idname, text="", icon="RESTRICT_SELECT_OFF",
+                 emboss=False).image = img.name
     row.operator(DECALPRESS_OT_remove.bl_idname, text="", icon="X", emboss=False).image = img.name
     if not s.show_expanded:
         return
@@ -1046,7 +1334,12 @@ def _draw_decal(layout, img):
     col.use_property_decorate = False
     if s.kind == "TEXT":
         col.prop(s, "text_color")
-        col.prop(s, "font_path")
+        prefs = _prefs()
+        default = os.path.basename(prefs.default_font) if prefs and prefs.default_font else ""
+        try:
+            col.prop(s, "font_path", placeholder=default or "Nunito ExtraBold (bundled)")
+        except TypeError:  # no placeholders before Blender 5.x (untested there)
+            col.prop(s, "font_path")
         warning = font_warnings.get(img.as_pointer())
         if warning:
             col.label(text=warning, icon="ERROR")
@@ -1061,26 +1354,39 @@ def _draw_decal(layout, img):
     col.prop(s, "margin")
     if s.mode == "REPLACE":
         col.prop(s, "background_color")
+
     col.separator()
     col.prop(s, "fit")
     row = col.row(align=True)
     row.operator(DECALPRESS_OT_rotate.bl_idname, icon="FILE_REFRESH").image = img.name
     row.operator(DECALPRESS_OT_refit.bl_idname, icon="UV").image = img.name
     col.separator()
+    if s.kind == "TEXT":
+        col.row().prop(s, "size_mode", expand=True)
+    if s.kind == "TEXT" and s.size_mode == "HEIGHT":
+        col.prop(s, "letter_height")
+    else:
+        col.prop(s, "scale")
     col.prop(s, "offset")
     col.prop(s, "angle")
-    col.prop(s, "scale")
-    w, h = img.size
-    mode = "layer" if s.mode == "LAYER" else "own material"
-    box.label(text=f"{s.width_mm:.1f} x {s.height_mm:.1f} mm, {w} x {h} px, {mode}")
+
+    info = box.column(align=True)
+    if s.kind == "TEXT" and s.letter_mm > 0:
+        info.label(text=f"Letters {s.letter_mm:.1f} mm tall, decal "
+                        f"{s.width_mm:.1f} x {s.height_mm:.1f} mm")
+        if s.letter_mm < LEGIBLE_MM:
+            info.label(text=f"Letters under {LEGIBLE_MM:g} mm may not print legibly",
+                       icon="ERROR")
+    else:
+        w, h = img.size
+        info.label(text=f"{s.width_mm:.1f} x {s.height_mm:.1f} mm, {w} x {h} px")
+    u0, v0, u1, v1 = s.fit_rect
+    if s.width_mm > (u1 - u0) * 1.01 + 1e-6 or s.height_mm > (v1 - v0) * 1.01 + 1e-6:
+        info.label(text="Bigger than the faces' clear area: may be cut off", icon="INFO")
 
 
-class DECALPRESS_PT_panel(bpy.types.Panel):
+class _DecalPanel:
     bl_label = "Decal Press"
-    bl_space_type = "PROPERTIES"
-    bl_region_type = "WINDOW"
-    bl_context = "material"
-    bl_order = 1  # right under the material slots
 
     @classmethod
     def poll(cls, context):
@@ -1089,8 +1395,18 @@ class DECALPRESS_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        for img in active_decals(context):
-            _draw_decal(layout, img)
+        obj = context.active_object
+        decals = object_decals(obj)
+        under = set(active_decals(context)) if context.mode == "EDIT_MESH" else set()
+        for img in sorted(decals, key=lambda i: i not in under):
+            _draw_decal(layout, img, img in under)
+        if decals:
+            if obj.data.users > 1:
+                layout.label(text=f"This mesh is shared by {obj.data.users} objects: "
+                                  "the decals show on all of them", icon="INFO")
+            if any(m.type in SHAPE_MODIFIERS and m.show_viewport for m in obj.modifiers):
+                layout.label(text="Modifiers move the surface under the decals: "
+                                  "apply them for exact placement", icon="INFO")
 
         if context.mode != "EDIT_MESH":
             layout.label(text="Select faces in Edit Mode to add a decal", icon="INFO")
@@ -1110,19 +1426,88 @@ class DECALPRESS_PT_panel(bpy.types.Panel):
             body.prop(new, "mode", text="")
 
 
+class DECALPRESS_PT_material(_DecalPanel, bpy.types.Panel):
+    """Under the material slots, for EEVEE and Workbench"""
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "material"
+    bl_parent_id = "EEVEE_MATERIAL_PT_context_material"
+
+
+class DECALPRESS_PT_material_cycles(_DecalPanel, bpy.types.Panel):
+    """Under the material slots, for Cycles"""
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "material"
+    bl_parent_id = "CYCLES_PT_context_material"
+
+
+class DECALPRESS_PT_sidebar(_DecalPanel, bpy.types.Panel):
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Decal"
+
+
+PANELS = (DECALPRESS_PT_material, DECALPRESS_PT_material_cycles, DECALPRESS_PT_sidebar)
+
+
+def _register_panels():
+    """Register the panel where the preferences say."""
+    for cls in PANELS:
+        if cls.is_registered:
+            bpy.utils.unregister_class(cls)
+    prefs = _prefs()
+    if prefs and prefs.panel_location == "SIDEBAR":
+        DECALPRESS_PT_sidebar.bl_category = prefs.sidebar_tab.strip() or "Decal"
+        bpy.utils.register_class(DECALPRESS_PT_sidebar)
+        return
+    for cls in (DECALPRESS_PT_material, DECALPRESS_PT_material_cycles):
+        try:
+            bpy.utils.register_class(cls)
+        except RuntimeError:
+            pass  # Cycles turned off: its slot panel isn't there
+
+
 classes = (DecalSettings, NewDecalSettings, DecalPreferences, DECALPRESS_OT_add,
-           DECALPRESS_OT_rotate, DECALPRESS_OT_refit, DECALPRESS_OT_remove,
-           DECALPRESS_PT_panel)
+           DECALPRESS_OT_rotate, DECALPRESS_OT_select, DECALPRESS_OT_refit,
+           DECALPRESS_OT_remove)
 
 
 def register():
+    global _draw_handle
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Image.decal_press = PointerProperty(type=DecalSettings)
     bpy.types.Scene.decal_press_new = PointerProperty(type=NewDecalSettings)
+    bpy.types.Scene.decal_press_show_solid = BoolProperty(
+        name="Decals", default=True,
+        description="Show Decal Press decals in Solid shading, as they will print")
+    _register_panels()
+    bpy.types.VIEW3D_PT_overlay_object.append(_draw_overlay_toggle)
+    _draw_handle = bpy.types.SpaceView3D.draw_handler_add(_draw_solid, (), "WINDOW", "POST_VIEW")
+    bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
+    bpy.app.handlers.load_post.append(_on_load)
+    bpy.app.handlers.undo_post.append(_on_undo)
+    bpy.app.handlers.save_pre.append(_on_save)
+    bpy.app.handlers.redo_post.append(_on_undo)
 
 
 def unregister():
+    global _draw_handle
+    bpy.app.handlers.save_pre.remove(_on_save)
+    bpy.app.handlers.redo_post.remove(_on_undo)
+    bpy.app.handlers.undo_post.remove(_on_undo)
+    bpy.app.handlers.load_post.remove(_on_load)
+    bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph)
+    if _draw_handle is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, "WINDOW")
+        _draw_handle = None
+    bpy.types.VIEW3D_PT_overlay_object.remove(_draw_overlay_toggle)
+    _free_gpu()
+    for cls in PANELS:
+        if cls.is_registered:
+            bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.decal_press_show_solid
     del bpy.types.Scene.decal_press_new
     del bpy.types.Image.decal_press
     for cls in reversed(classes):

@@ -31,15 +31,16 @@ is the export test in 0.5.
 
 ### 0.5 Trustworthy
 The four feedback items of 2026-11-11 and the audit's bugs. No change to how decals are stored.
-- **Export test first:** a layered decal 3MF opened in SmartStream and MiniMagics (Windows VM),
-  then printed on the 580. If layers aren't read, 0.6 becomes urgent and ships before the rest
-  of 0.5's polish.
-- Bugs B1 to B6, starting with objects that have no material. Tests that assert.
-- Decals drawn in Solid shading, a list of every decal on the object, `decals_on(obj)` for
-  Bucket Builder's export check.
-- No Resolution setting: image size chosen from the decal's size.
-- Panel location preference (Material Properties or Sidebar), as in the portfolio review.
-- A warning line when a modifier changes the shape under a decal.
+0.5.0 (2026-11-24) delivers all of it except the export test and `decals_on(obj)`:
+- **Export test** (still open): a layered decal 3MF opened in SmartStream and MiniMagics (Windows
+  VM), then printed on the 580. If layers aren't read, 0.6 becomes urgent.
+- Done: bugs B1 to B6 (objects without materials, overlap, remove, failed adds), tests that assert,
+  undo.
+- Done: decals drawn in Solid shading, a list of every decal on the object. Still to do:
+  `decals_on(obj)` for Bucket Builder's export check (with the API in 0.8).
+- Done: no Resolution setting; resolution from the printer (DECISIONS D-009); Letter Height.
+- Done: panel location preference (Material Properties or Sidebar).
+- Done: a note when a modifier changes the shape under a decal.
 
 ### 0.6 Flatten (owner's request 5)
 One button turns a part's layers into one ordinary texture, and the 3MF exporter can do the same
@@ -86,6 +87,7 @@ Variable content, and the meeting point with Bucket Builder's labeled copies (#3
 - Several lines and alignment.
 - Legibility checks (letter height, stroke width, contrast), a backing box, automatic black or
   white text.
+- Dual Tone (5600, later the 1200): a grayscale mode and a preview of how the decal prints.
 
 ### 0.9 Reach
 Each is independent; order by demand.
@@ -93,7 +95,6 @@ Each is independent; order by demand.
 - QR and Data Matrix codes.
 - Saved styles (a company label layout, a logo).
 - Adopting decals from an imported layered 3MF.
-- A grayscale mode for Dual Tone on the 5600, if the owner wants it.
 
 ### 1.0 Proven
 - A printed test sheet on the 580 sets the thresholds used by the checks.
@@ -106,18 +107,22 @@ Each is independent; order by demand.
 - **Real parts.** All testing is on synthetic shapes; the owner's test on real parts is still open.
 - **A pushed repository and filed issues.** The roadmap lives in these documents until the token
   works.
-- **Numbers from the printer:** effective color resolution, smallest legible letter, smallest code
-  module, whether face orientation in the build changes color.
+- **Numbers from the printer:** the smallest code module (QR, Data Matrix), from a test print. The
+  resolution, smallest letter and orientation answers are in.
 - **Scripts other than Latin.** The bundled font covers Latin, Cyrillic and Vietnamese, but not Greek,
   Arabic, Hebrew, Chinese, Japanese or Korean. What a decal shows for those is untested.
 - **The preview chain.** Crosscut's 580 color preview and Bucket Builder's export check don't know
   about decals yet.
-- **Undo** has not been tested in a real window.
 
-## Open questions for the owner
+## Answers from the owner (2026-11-23)
 
-1. Is the order right: Flatten (0.6) before Placement (0.7)? Flatten is smaller and makes every
-   file usable; Placement is the bigger change in how it feels to use.
-2. Should Flatten on a textured part enlarge the part's texture, or keep its size and accept
-   softer text?
-3. Dual Tone on the 5600: a target for 0.9, sooner, or not at all?
+1. **Order of Flatten and Placement:** ours to choose; a larger overhaul is coming anyway. Kept as
+   written: Flatten (0.6) is smaller and makes every file usable.
+2. **Texture size when flattening:** sharp text always comes first; image size won't be a problem
+   short of paragraphs of text. So Flatten enlarges a textured part's image where a decal needs it.
+3. **Dual Tone** is commercially available on the 5600 and about a year out on the 1200: a real
+   target alongside the 580, not a someday item. The grayscale mode and preview move from 0.9 to
+   0.8.
+4. **The printer's numbers:** the 580 and Dual Tone resolve the same, from a 600 dpi printhead with
+   ink bleeding to about the PA 12 grain (HP lists 55-60 um). Smallest text about 2 mm. Build
+   orientation doesn't change color. 0.5.0 uses this for its resolution (DECISIONS D-009).

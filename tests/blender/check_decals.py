@@ -18,6 +18,7 @@ import sys
 
 import bmesh
 import bpy
+import numpy as np
 from mathutils import Matrix, Vector
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
@@ -315,6 +316,65 @@ def sequences():
                    min(shorts) >= dp.MIN_TEXT_PIXELS))
     checks.append(("text on a 2 mm and a 200 mm cube has the same proportions",
                    letters[0] > 0 and abs(letters[0] / letters[1] - 1) < 0.02))
+
+    for size in (20, 200):
+        clear()
+        obj, _ = build("cube", size)
+        obj.data.materials.append(body_material())
+        _, a, _ = add_decal(obj, front, "Height 42")
+        a.decal_press.size_mode = "HEIGHT"
+        a.decal_press.letter_height = 3.0
+        checks.append((f"letter height 3 mm on a {size} mm cube gives 3 mm capitals",
+                       abs(a.decal_press.letter_mm - 3.0) < 0.1))
+    a.decal_press.margin = 0.3
+    checks.append(("letter height holds when the margin changes",
+                   abs(a.decal_press.letter_mm - 3.0) < 0.1))
+
+    clear()
+    obj, _ = build("cube", 20)
+    obj.data.materials.append(body_material())
+    _, a, sa = add_decal(obj, front, "Pick")
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.decal_press.select(image=a.name)
+    picked = {f.index for f in bmesh.from_edit_mesh(obj.data).faces if f.select}
+    bpy.ops.object.mode_set(mode="OBJECT")
+    checks.append(("Select Faces selects exactly the decal's faces", picked == sa))
+    checks.append(("panel registered under the material slots",
+                   dp.DECALPRESS_PT_material.is_registered
+                   and not dp.DECALPRESS_PT_sidebar.is_registered))
+
+    clear()
+    obj, _ = build("cube", 20)
+    obj.data.materials.append(body_material())
+    _, a, _ = add_decal(obj, front, "Saved")
+    a.decal_press.scale = 0.6
+    a.decal_press.text_color = (0.8, 0.1, 0.1)
+    px = np.empty(len(a.pixels), np.float32)
+    a.pixels.foreach_get(px)
+    size, name = tuple(a.size), a.name
+    path = os.path.join(bpy.app.tempdir, "decal_press_saved.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=path, copy=True)
+    bpy.ops.wm.open_mainfile(filepath=path)
+    b = bpy.data.images.get(name)
+    px2 = np.empty(len(b.pixels), np.float32) if b else None
+    if b:
+        b.pixels.foreach_get(px2)
+    checks.append(("a decal resized and recolored survives saving and reopening",
+                   b is not None and tuple(b.size) == size and b.packed_file is not None
+                   and np.abs(px - px2).max() < 1 / 255 + 1e-6))
+    os.remove(path)
+
+    from types import SimpleNamespace
+    real = dp._prefs
+    dp._prefs = lambda: SimpleNamespace(panel_location="SIDEBAR", sidebar_tab="Print",
+                                        default_font="")
+    dp._register_panels()
+    checks.append(("Sidebar preference moves the panel to the named tab",
+                   dp.DECALPRESS_PT_sidebar.is_registered
+                   and not dp.DECALPRESS_PT_material.is_registered
+                   and dp.DECALPRESS_PT_sidebar.bl_category == "Print"))
+    dp._prefs = real
+    dp._register_panels()
 
     for name, ok in checks:
         print(f"{'ok  ' if ok else 'FAIL'} sequence: {name}")

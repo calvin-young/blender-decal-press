@@ -17,19 +17,30 @@ summaries only, never prompt text.
 
 | Bugs found | UI tweaks | New features | Direction | Total |
 |---|---|---|---|---|
-| 1 | 4 | 5 | 3 | 13 |
+| 3 | 5 | 8 | 7 | 23 |
 
 ## Sessions
 
 | Date | Tool and model | Prompts | Steering lines | Notes |
 |---|---|---|---|---|
 | 2026-11-09/10 | Claude Code (workstation), Opus 5.5 | 6 | 13 | 0.1.0 to 0.4.0: text decals, layered and image decals, font, rename, fit on awkward faces, placement |
+| 2026-11-11/24 | Claude Code (workstation), Fable 5.2 then Opus 5.5 | 6 (relayed by an orchestrating session) | 10 | Audit, vision, bug hunt, 0.5.0 |
 
 ## Steering
 
 Newest first, tagged with its kind (decide, correct, domain, tested, scope) and category (bug, ui,
 feature, direction).
 
+- 2026-11-23 [domain][direction]: 580 and Dual Tone resolve the same: 600 dpi printhead, bleed to about the PA 12 grain; smallest text about 2 mm; orientation doesn't change color.
+- 2026-11-23 [decide][direction]: Dual Tone is a real target (5600 now, 1200 in about a year).
+- 2026-11-23 [decide][direction]: sharp text always comes first; image size won't be a problem.
+- 2026-11-23 [tested][bug]: decals project through and show inverted on the backs of parts; not usable, mostly for text.
+- 2026-11-12 [scope][feature]: keep an exact-faces placement mode beside placement on the surface, with a switch.
+- 2026-11-12 [scope][feature]: a Flatten button baking layers into one texture, also as a 3MF export option.
+- 2026-11-11 [scope][ui]: a panel location preference, the same in all the add-ons.
+- 2026-11-11 [tested][bug]: decals invisible in Solid shading, so a part could print with a decal nobody saw.
+- 2026-11-11 [correct][direction]: the Resolution setting shouldn't be needed; the same look at any size.
+- 2026-11-11 [tested][feature]: images on Suzanne with Subdivision distort oddly.
 - 2026-11-10 [scope][feature]: rotate, translate and scale a decal after placement.
 - 2026-11-10 [tested][bug]: weird results on real parts that aren't planar or rectangular.
 - 2026-11-10 [decide][ui]: the panel goes in the Material tab.

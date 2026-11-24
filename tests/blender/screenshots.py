@@ -2,10 +2,10 @@
 # Copyright 2026 Calvin Young
 """Screenshots of decals in a real Blender window, for looking at, not judging.
 
-tests/blender/screenshots.sh [OUT_DIR] [--keep]
+tests/blender/window.sh screenshots.py [--out DIR] [--keep]
 
 A fresh user config opens on Blender's Quick Setup splash. Point BLENDER_USER_CONFIG at a folder
-whose userpref.blend has the splash turned off (tests/blender/screenshots.sh does this).
+whose userpref.blend has the splash turned off (tests/blender/window.sh does this).
 
 Sets up synthetic parts (the default 2 mm cube, a 100 mm block with its scale
 not applied, a cylinder and Suzanne without materials), adds text decals with
@@ -91,6 +91,15 @@ def shot(name):
     print("shot", path)
 
 
+def edit_mode(name):
+    obj = bpy.data.objects[name]
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode="EDIT")
+
+
 STEPS = [
     lambda: setup(),
     lambda: view("FRONT"),
@@ -101,6 +110,8 @@ STEPS = [
     lambda: shot("front_solid"),
     lambda: setattr(area("PROPERTIES")[1].spaces[0], "context", "MATERIAL"),
     lambda: shot("material_tab"),
+    lambda: edit_mode("Cube.001"),
+    lambda: shot("material_tab_edit"),
 ]
 
 
