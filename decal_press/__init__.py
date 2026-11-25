@@ -40,6 +40,7 @@ MAX_TOTAL_PIXELS = 16_000_000  # whole text image, about 256 MB while drawing
 # detail finer than that. Two texels per printhead dot is the most a decal ever needs.
 PRINT_PIXELS_PER_MM = 48.0  # about 1200 dpi
 MIN_TEXT_PIXELS = 256  # short side of a text image, so tiny decals stay sharp on screen
+SOFT_PIXELS_PER_MM = 12.0  # half the printhead's 600 dpi: an image below this prints soft
 LEGIBLE_MM = 2.0  # smallest letter height the owner aims for on printed parts
 UV_MAP_LIMIT = 8  # Blender's limit per mesh
 MEASURE_SIZE = 200  # font size used to measure the ink box
@@ -210,7 +211,7 @@ def _text_pixels(s):
         ref = _ink_box(fid, "Hg")
         x0, x1 = text_box[0], text_box[1]
         y0, y1 = min(text_box[2], ref[2]), max(text_box[3], ref[3])
-        margin = s.margin * min(width, height)
+        margin = _pad_mm(s) * height / h_mm
         scale = min((height - 2 * margin) / (y1 - y0),
                     (width - 2 * margin) / (x1 - x0))
         if scale > 0:
@@ -228,6 +229,13 @@ def _text_pixels(s):
     return rgba
 
 
+def _pad_mm(s):
+    """Margin around the content in mm, as fitted (or from the margin, before a fit)."""
+    if s.pad_mm >= 0:
+        return s.pad_mm
+    return s.margin * min(max(s.width_mm, 1e-3), max(s.height_mm, 1e-3))
+
+
 def _image_pixels(s):
     """The source image, keyed, centred on a transparent canvas of the face's shape."""
     src = s.source
@@ -243,9 +251,9 @@ def _image_pixels(s):
         soft = max(s.key_softness, 1e-4)
         px[..., 3] *= np.clip((dist - s.key_tolerance) / soft, 0.0, 1.0)
 
-    # Pad (never resample) to the face's aspect ratio, keeping the margin.
+    # Pad (never resample) to the decal's aspect ratio, keeping the margin.
     w_mm, h_mm = max(s.width_mm, 1e-3), max(s.height_mm, 1e-3)
-    margin = s.margin * min(w_mm, h_mm)
+    margin = _pad_mm(s)
     mm_per_px = min((w_mm - 2 * margin) / w, (h_mm - 2 * margin) / h)
     if mm_per_px <= 0:
         return np.zeros((4, 4, 4), dtype=np.float32)
@@ -409,6 +417,8 @@ class DecalSettings(bpy.types.PropertyGroup):
     rotation: IntProperty(min=0, max=3, default=0)  # quarter turns of the fit frame
     fit_rect: FloatVectorProperty(size=4)  # (u0, v0, u1, v1) in mm in the fit frame
     width_mm: FloatProperty(default=10.0)
+    pad_mm: FloatProperty(default=-1.0)  # margin around the content in mm; -1: not fitted yet
+    off_faces: BoolProperty(default=False)  # moved entirely off its faces
     letter_mm: FloatProperty(default=0.0)  # capital letter height of a text decal
     height_mm: FloatProperty(default=10.0)
     uv_map: StringProperty()
@@ -831,16 +841,38 @@ def _content_aspect(s):
 
 
 def _letter_box(s):
-    """Decal size (w, h) in mm for text whose capitals are s.letter_height tall."""
+    """Decal (w, h, margin) in mm for text whose capitals are s.letter_height tall."""
     m = _text_metrics(s)
     if m is None:
         return None
     ink_w, ink_h, cap = m
     h_ink = s.letter_height * ink_h / cap
     w_ink = h_ink * ink_w / ink_h
-    # The margin is a fraction of the short side, as in _text_pixels.
-    short = min(w_ink, h_ink) / (1 - 2 * s.margin)
-    return w_ink + 2 * s.margin * short, h_ink + 2 * s.margin * short
+    pad = s.margin * min(w_ink, h_ink) / (1 - 2 * s.margin)
+    return w_ink + 2 * pad, h_ink + 2 * pad, pad
+
+
+def _content_box(s, avail_w, avail_h):
+    """Decal (w, h, margin) in mm: the content as big as fits in avail_w x avail_h.
+
+    The margin is a fraction of the available short side. The decal hugs the
+    content, so its image spends every pixel on the text or picture.
+    """
+    if s.kind == "TEXT":
+        m = _text_metrics(s)
+        if m is None:
+            return None
+        cw, ch = m[0], m[1]
+    else:
+        src = s.source
+        if src is None or not src.size[0] or not src.size[1]:
+            return None
+        cw, ch = src.size
+    pad = s.margin * min(avail_w, avail_h)
+    k = min((avail_w - 2 * pad) / cw, (avail_h - 2 * pad) / ch)
+    if k <= 0:
+        return None
+    return cw * k + 2 * pad, ch * k + 2 * pad, pad
 
 
 def fit_decal(obj, bm, img, search=True):
@@ -886,12 +918,21 @@ def fit_decal(obj, bm, img, search=True):
     u0, v0, u1, v1 = s.fit_rect
     cu = umin + (u0 + u1) / 2 + s.offset[0]
     cv = vmin + (v0 + v1) / 2 + s.offset[1]
-    box = _letter_box(s) if s.kind == "TEXT" and s.size_mode == "HEIGHT" else None
-    if box:
-        dw, dh = box
+    avail_w, avail_h = max((u1 - u0) * s.scale, 1e-3), max((v1 - v0) * s.scale, 1e-3)
+    if s.kind == "TEXT" and s.size_mode == "HEIGHT":
+        box = _letter_box(s)
     else:
-        dw, dh = max((u1 - u0) * s.scale, 1e-3), max((v1 - v0) * s.scale, 1e-3)
+        box = _content_box(s, avail_w, avail_h)
+    if box:
+        dw, dh, s.pad_mm = box
+    else:
+        dw, dh, s.pad_mm = avail_w, avail_h, s.margin * min(avail_w, avail_h)
     ca, sa = math.cos(-s.angle), math.sin(-s.angle)
+    # Off its faces when its turned bounds miss the faces' bounds entirely.
+    ex = abs(dw * ca) + abs(dh * sa)
+    ey = abs(dw * sa) + abs(dh * ca)
+    s.off_faces = bool(abs(cu - umin - width / 2) >= (width + ex) / 2
+                       or abs(cv - vmin - height / 2) >= (height + ey) / 2)
 
     layers = bm.loops.layers.uv
     if not s.uv_map:
@@ -981,13 +1022,25 @@ class DECALPRESS_OT_add(bpy.types.Operator):
         if new.kind == "IMAGE" and new.image is None:
             self.report({"WARNING"}, "Pick or open an image first")
             return {"CANCELLED"}
-        obj = context.edit_object
-        bm = bmesh.from_edit_mesh(obj.data)
-        selected = [f for f in bm.faces if f.select]
-        if not selected:
+        # Every object in Edit Mode with selected faces gets its own decal.
+        objects = [o for o in context.objects_in_mode_unique_data if o.type == "MESH"
+                   and any(f.select for f in bmesh.from_edit_mesh(o.data).faces)]
+        if not objects:
             self.report({"WARNING"}, "Select the faces for the decal")
             return {"CANCELLED"}
-        # Check everything that can fail before changing anything.
+        problems = [p for p in (self._check(o, new) for o in objects) if p]
+        if problems:
+            self.report({"WARNING"}, "; ".join(problems))
+            return {"CANCELLED"}
+        for obj in objects:
+            self._add(obj, new)
+        return {"FINISHED"}
+
+    @staticmethod
+    def _check(obj, new):
+        """What stops a decal going on obj's selected faces, or None."""
+        name = f"{obj.name}: " if len(bpy.context.objects_in_mode_unique_data) > 1 else ""
+        selected = [f for f in bmesh.from_edit_mesh(obj.data).faces if f.select]
         nmat = obj.matrix_world.to_3x3().inverted_safe().transposed()
         normal, total = Vector(), 0.0
         for f in selected:
@@ -995,19 +1048,20 @@ class DECALPRESS_OT_add(bpy.types.Operator):
             normal += n
             total += n.length
         if total < 1e-12:
-            self.report({"WARNING"}, "The selected faces have no area")
-            return {"CANCELLED"}
+            return name + "the selected faces have no area"
         if normal.length < 0.2 * total:
-            self.report({"WARNING"}, "The selected faces point in all directions: "
-                        "select faces on one side of the part")
-            return {"CANCELLED"}
+            return (name + "the selected faces point in all directions: "
+                    "select faces on one side of the part")
         if new.mode == "LAYER":
             uv_map = _free_layer_uv(obj)
             if uv_map not in obj.data.uv_layers and len(obj.data.uv_layers) >= UV_MAP_LIMIT:
-                self.report({"WARNING"}, f"This mesh already has {UV_MAP_LIMIT} UV maps, "
-                            "Blender's limit: remove a decal or a UV map first")
-                return {"CANCELLED"}
+                return (name + f"the mesh already has {UV_MAP_LIMIT} UV maps, Blender's "
+                        "limit: remove a decal or a UV map first")
+        return None
 
+    @staticmethod
+    def _add(obj, new):
+        """Put a new decal on obj's selected faces. _check passed."""
         _prepare_slots(obj)
         bm = bmesh.from_edit_mesh(obj.data)  # slot changes can rebuild it
         selected = [f for f in bm.faces if f.select]
@@ -1027,7 +1081,7 @@ class DECALPRESS_OT_add(bpy.types.Operator):
         img.name = decal_name(s)
 
         if new.mode == "LAYER":
-            s.uv_map = uv_map
+            s.uv_map = _free_layer_uv(obj)
             copies = {}
             for base in set(bases.values()):
                 copies[base] = layered_copy(base, img, s.uv_map)
@@ -1049,7 +1103,6 @@ class DECALPRESS_OT_add(bpy.types.Operator):
         refit(img, objects=[obj])
         obj.active_material_index = next(i for i, slot in enumerate(obj.material_slots)
                                          if slot.material in targets.values())
-        return {"FINISHED"}
 
 
 class _DecalOperator:
@@ -1274,6 +1327,10 @@ def _on_depsgraph(scene, depsgraph):
 
 @persistent
 def _on_load(*_):
+    # Opening a file frees the fonts loaded with blf.load: their ids are stale.
+    _font_ids.clear()
+    _ink_boxes.clear()
+    _coverage.clear()
     _batches.clear()
     _drawn.clear()
     font_warnings.clear()
@@ -1285,6 +1342,9 @@ def _on_save(*_):
     for img in bpy.data.images:
         if img.decal_press.is_decal and (img.is_dirty or not img.packed_file):
             img.pack()
+        src = img.decal_press.source if img.decal_press.is_decal else None
+        if src and not src.packed_file and (src.source == "GENERATED" or src.is_dirty):
+            src.pack()  # an image made or painted in Blender would be lost on reload
 
 
 @persistent
@@ -1380,6 +1440,12 @@ def _draw_decal(layout, img, on_face=False):
     else:
         w, h = img.size
         info.label(text=f"{s.width_mm:.1f} x {s.height_mm:.1f} mm, {w} x {h} px")
+        ppm = w / max(s.width_mm, 1e-6)
+        if s.kind == "IMAGE" and ppm < SOFT_PIXELS_PER_MM:
+            info.label(text=f"{ppm:.1f} px per mm: may print soft (the printer resolves "
+                            f"about 24)", icon="ERROR")
+    if s.off_faces:
+        info.label(text="Moved off its faces: it won't show. Reset Offset", icon="ERROR")
     u0, v0, u1, v1 = s.fit_rect
     if s.width_mm > (u1 - u0) * 1.01 + 1e-6 or s.height_mm > (v1 - v0) * 1.01 + 1e-6:
         info.label(text="Bigger than the faces' clear area: may be cut off", icon="INFO")

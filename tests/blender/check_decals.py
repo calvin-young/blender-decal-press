@@ -96,7 +96,7 @@ def add_decal(obj, pick, text, kind="TEXT"):
         if f.select:
             selected.add(f.index)
     bmesh.update_edit_mesh(obj.data)
-    new = scene.decal_press_new
+    new = bpy.context.scene.decal_press_new
     new.kind = kind
     new.text = text
     result = bpy.ops.decal_press.add()
@@ -363,6 +363,58 @@ def sequences():
                    b is not None and tuple(b.size) == size and b.packed_file is not None
                    and np.abs(px - px2).max() < 1 / 255 + 1e-6))
     os.remove(path)
+
+    clear()
+    obj, _ = build("cube", 20)
+    obj.data.materials.append(body_material())
+    logo = bpy.data.images.new("Logo", 300, 100, alpha=True)
+    paint = np.zeros((100, 300, 4), np.float32)
+    paint[20:80, 30:270] = (0.1, 0.2, 0.8, 1.0)
+    logo.pixels.foreach_set(paint.ravel())  # painted in Blender: lost on reload unless packed
+    bpy.context.scene.decal_press_new.kind, bpy.context.scene.decal_press_new.image = "IMAGE", logo
+    r, a, sa = add_decal(obj, front, "", kind="IMAGE")
+    bpy.context.scene.decal_press_new.kind = "TEXT"
+    s = a.decal_press
+    inner = (s.width_mm - 2 * s.pad_mm) / (s.height_mm - 2 * s.pad_mm)
+    checks.append(("an image decal hugs the image (no padding to the face's shape)",
+                   r == {"FINISHED"} and abs(inner / 3.0 - 1) < 0.02))
+    path = os.path.join(bpy.app.tempdir, "decal_press_logo.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=path, copy=True)
+    checks.append(("a painted source image is packed on save, so the decal can be redrawn",
+                   logo.packed_file is not None))
+    os.remove(path)
+
+    clear()
+    obj, _ = build("cube", 20)
+    obj.data.materials.append(body_material())
+    _, a, _ = add_decal(obj, front, "Away")
+    a.decal_press.offset = (100, 0)
+    away = a.decal_press.off_faces
+    a.decal_press.offset = (5, 0)
+    checks.append(("a decal moved off its faces is flagged, and not when it's back",
+                   away and not a.decal_press.off_faces))
+
+    clear()
+    one, _ = build("cube", 20)
+    two, _ = build("cube", 20)
+    two.location.x = 40
+    for ob in (one, two):
+        ob.data.materials.append(body_material())
+        ob.select_set(True)
+    bpy.context.view_layer.objects.active = one
+    bpy.ops.object.mode_set(mode="EDIT")
+    for ob in (one, two):
+        bm = bmesh.from_edit_mesh(ob.data)
+        for f in bm.faces:
+            f.select = front(f)
+        bmesh.update_edit_mesh(ob.data)
+    bpy.context.scene.decal_press_new.text = "Both"
+    r = bpy.ops.decal_press.add()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    checks.append(("two objects in Edit Mode each get their own decal",
+                   r == {"FINISHED"} and len(dp.object_decals(one)) == 1
+                   and len(dp.object_decals(two)) == 1
+                   and dp.object_decals(one) != dp.object_decals(two)))
 
     from types import SimpleNamespace
     real = dp._prefs
