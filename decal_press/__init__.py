@@ -685,6 +685,25 @@ def _hull(points):
     return half(pts) + half(reversed(pts))
 
 
+def _hull_candidates(xy):
+    """Rows of xy (N x 2) that can be on the convex hull.
+
+    Drops the points strictly inside the octagon of the extreme points
+    (Akl-Toussaint), so the Python hull only sees the outline of dense meshes.
+    """
+    if len(xy) < 16:
+        return xy
+    x, y = xy[:, 0], xy[:, 1]
+    order = [np.argmin(x), np.argmin(x + y), np.argmin(y), np.argmax(x - y),
+             np.argmax(x), np.argmax(x + y), np.argmax(y), np.argmin(x - y)]
+    poly = [xy[i] for k, i in enumerate(order) if k == 0 or i != order[k - 1]]
+    inside = np.ones(len(xy), dtype=bool)
+    for p0, p1 in zip(poly, poly[1:] + poly[:1]):
+        cross = (p1[0] - p0[0]) * (y - p0[1]) - (p1[1] - p0[1]) * (x - p0[0])
+        inside &= cross > 1e-12
+    return xy[~inside]
+
+
 def _frame_axes(normal, points, quarter_turns):
     """Image axes (u, v) on the plane of normal for world points.
 
@@ -696,7 +715,8 @@ def _frame_axes(normal, points, quarter_turns):
     """
     a = normal.orthogonal().normalized()
     b = normal.cross(a)
-    hull = _hull([(p.dot(a), p.dot(b)) for p in points])
+    xy = np.asarray(points, dtype=np.float64) @ np.array([a[:], b[:]]).T
+    hull = _hull([tuple(p) for p in _hull_candidates(xy)])
     if abs(normal.z) < 0.9:
         world = Vector((0, 0, 1)).cross(normal)
     else:
@@ -875,43 +895,79 @@ def _content_box(s, avail_w, avail_h):
     return cw * k + 2 * pad, ch * k + 2 * pad, pad
 
 
-def fit_decal(obj, bm, img, search=True):
-    """Map the faces showing img onto it, in its UV map.
+def _decal_loops(obj, img):
+    """(faces, loops, loop vertices) of obj's mesh where img shows, as arrays, or None."""
+    me = obj.data
+    slots = [i for i, slot in enumerate(obj.material_slots)
+             if slot.material and any(n.image == img for n in decal_nodes(slot.material))]
+    nf = len(me.polygons)
+    if not slots or not nf:
+        return None
+    mat = np.empty(nf, dtype=np.int32)
+    me.polygons.foreach_get("material_index", mat)
+    faces = np.flatnonzero(np.isin(mat, slots))
+    if not len(faces):
+        return None
+    start = np.empty(nf, dtype=np.int32)
+    total = np.empty(nf, dtype=np.int32)
+    me.polygons.foreach_get("loop_start", start)
+    me.polygons.foreach_get("loop_total", total)
+    counts = total[faces]
+    offsets = np.arange(counts.sum()) - np.repeat(np.cumsum(counts) - counts, counts)
+    loops = np.repeat(start[faces], counts) + offsets
+    loop_vert = np.empty(len(me.loops), dtype=np.int32)
+    me.loops.foreach_get("vertex_index", loop_vert)
+    return faces, loops, loop_vert[loops]
 
-    The decal sits in its fit rectangle, found again when search is set (or
-    never found yet), then moved, turned and scaled by its placement
-    settings. Stores the decal's size in mm.
+
+def fit_decal(obj, img, search=True):
+    """UVs (loops, uv) mapping the faces of obj that show img onto it, or None.
+
+    Reads obj.data (synced from Edit Mode by the caller). The decal sits in its
+    fit rectangle, found again when search is set (or never found yet), then
+    moved, turned and sized by its placement settings. Stores the decal's size.
     """
     s = img.decal_press
-    slots = {i for i, slot in enumerate(obj.material_slots)
-             if slot.material and any(n.image == img for n in decal_nodes(slot.material))}
-    faces = [f for f in bm.faces if f.material_index in slots]
-    if not faces:
-        return False
-    mw = obj.matrix_world
-    nmat = mw.to_3x3().inverted_safe().transposed()
-    normal = Vector()
-    for f in faces:
-        normal += (nmat @ f.normal) * f.calc_area()
+    found = _decal_loops(obj, img)
+    if found is None:
+        return None
+    faces, loops, verts = found
+    me = obj.data
+    co = np.empty(len(me.vertices) * 3, dtype=np.float64)
+    me.vertices.foreach_get("co", co)
+    mw = np.array(obj.matrix_world, dtype=np.float64)
+    world = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
+
+    nf = len(me.polygons)
+    fn = np.empty(nf * 3, dtype=np.float64)
+    area = np.empty(nf, dtype=np.float64)
+    me.polygons.foreach_get("normal", fn)
+    me.polygons.foreach_get("area", area)
+    nmat = np.array(obj.matrix_world.to_3x3().inverted_safe().transposed(), dtype=np.float64)
+    normal = Vector(((fn.reshape(-1, 3)[faces] * area[faces, None]) @ nmat.T).sum(axis=0))
     if normal.length < 1e-9:
-        return False
+        return None
     normal.normalize()
 
-    world = {v: mw @ v.co for f in faces for v in f.verts}
-    u, v = _frame_axes(normal, list(world.values()), s.rotation)
-    coords = {vert: (p.dot(u), p.dot(v)) for vert, p in world.items()}
-    umin = min(c[0] for c in coords.values())
-    vmin = min(c[1] for c in coords.values())
-    width = max(c[0] for c in coords.values()) - umin
-    height = max(c[1] for c in coords.values()) - vmin
+    points = world[np.unique(verts)]
+    u, v = _frame_axes(normal, points, s.rotation)
+    uv_axes = np.array([u[:], v[:]]).T
+    pu, pv = (points @ uv_axes).T
+    umin, vmin = pu.min(), pv.min()
+    width, height = pu.max() - umin, pv.max() - vmin
     if width < 1e-6 or height < 1e-6:
-        return False
+        return None
 
     if search or s.fit_rect[2] <= s.fit_rect[0]:
         if s.fit == "CLEAR":
-            faceset = set(faces)
-            tris = [[(coords[l.vert][0] - umin, coords[l.vert][1] - vmin) for l in tri]
-                    for tri in bm.calc_loop_triangles() if tri[0].face in faceset]
+            me.calc_loop_triangles()
+            nt = len(me.loop_triangles)
+            tri_verts = np.empty(nt * 3, dtype=np.int32)
+            tri_face = np.empty(nt, dtype=np.int32)
+            me.loop_triangles.foreach_get("vertices", tri_verts)
+            me.loop_triangles.foreach_get("polygon_index", tri_face)
+            keep = np.isin(tri_face, faces)
+            tris = world[tri_verts.reshape(-1, 3)[keep]] @ uv_axes - (umin, vmin)
             s.fit_rect = _clear_rect(tris, width, height, _content_aspect(s))
         else:
             s.fit_rect = (0.0, 0.0, width, height)
@@ -934,16 +990,12 @@ def fit_decal(obj, bm, img, search=True):
     s.off_faces = bool(abs(cu - umin - width / 2) >= (width + ex) / 2
                        or abs(cv - vmin - height / 2) >= (height + ey) / 2)
 
-    layers = bm.loops.layers.uv
-    if not s.uv_map:
-        s.uv_map = layers.active.name if layers.active else "UVMap"
-    uv_layer = layers.get(s.uv_map) or layers.new(s.uv_map)
-    for f in faces:
-        for loop in f.loops:
-            x, y = coords[loop.vert][0] - cu, coords[loop.vert][1] - cv
-            loop[uv_layer].uv = ((x * ca - y * sa) / dw + 0.5, (x * sa + y * ca) / dh + 0.5)
+    x, y = (world[verts] @ uv_axes - (cu, cv)).T
+    uv = np.empty((len(loops), 2), dtype=np.float32)
+    uv[:, 0] = (x * ca - y * sa) / dw + 0.5
+    uv[:, 1] = (x * sa + y * ca) / dh + 0.5
     s.width_mm, s.height_mm = dw, dh
-    return True
+    return faces, loops, uv
 
 
 def decal_objects(img):
@@ -955,19 +1007,39 @@ def decal_objects(img):
 
 def refit(img, search=True, redraw=True, objects=None):
     """Refit decal img on its objects and redraw it."""
+    s = img.decal_press
     ok = False
     for obj in objects or decal_objects(img):
-        if obj.mode == "EDIT":
+        editing = obj.mode == "EDIT"
+        if editing:
+            obj.update_from_editmode()  # read the edited mesh with numpy
+        fitted = fit_decal(obj, img, search)
+        if fitted is None:
+            continue
+        ok = True
+        faces, loops, uv = fitted
+        if not s.uv_map:
+            active = obj.data.uv_layers.active
+            s.uv_map = active.name if active else "UVMap"
+        if editing:
             bm = bmesh.from_edit_mesh(obj.data)
-            ok |= fit_decal(obj, bm, img, search)
+            layer = bm.loops.layers.uv.get(s.uv_map) or bm.loops.layers.uv.new(s.uv_map)
+            bm.faces.ensure_lookup_table()
+            k = 0
+            for fi in faces.tolist():
+                for loop in bm.faces[fi].loops:
+                    loop[layer].uv = uv[k]
+                    k += 1
             bmesh.update_edit_mesh(obj.data)
         else:
-            bm = bmesh.new()
-            bm.from_mesh(obj.data)
-            ok |= fit_decal(obj, bm, img, search)
-            bm.to_mesh(obj.data)
-            bm.free()
-            obj.data.update()
+            me = obj.data
+            layer = me.uv_layers.get(s.uv_map) or me.uv_layers.new(name=s.uv_map)
+            data = np.empty(len(me.loops) * 2, dtype=np.float32)
+            layer.data.foreach_get("uv", data)
+            data = data.reshape(-1, 2)
+            data[loops] = uv
+            layer.data.foreach_set("uv", data.ravel())
+            me.update()
     if ok and redraw:
         update_decal(img)
     return ok
