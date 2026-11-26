@@ -2,7 +2,7 @@
 # Copyright 2026 Calvin Young
 """Decals survive 3MF export through blender-3mf-io (needs its layered-texture export).
 
-MF=<folder containing io_mesh_3mf> blender -b --factory-startup --python tests/blender/check_export.py
+MF=<folder containing io_mesh_3mf> [OUT=<folder to keep the .3mf files>] blender -b --factory-startup --python tests/blender/check_export.py
 
 For example, a copy of the fork's test-all-prs branch:
     git -C ~/dev/blender-3mf-io archive test-all-prs io_mesh_3mf | tar -x -C /tmp/mf
@@ -29,7 +29,8 @@ import io_mesh_3mf  # noqa: E402
 io_mesh_3mf.register()
 from io_mesh_3mf import api  # noqa: E402
 
-OUT = tempfile.mkdtemp(prefix="decal_press_export_")
+OUT = os.environ.get("OUT") or tempfile.mkdtemp(prefix="decal_press_export_")  # OUT keeps the files
+os.makedirs(OUT, exist_ok=True)
 front = lambda f: f.normal.y < -0.9  # noqa: E731
 results = []
 
