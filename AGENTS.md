@@ -35,8 +35,9 @@ The human-facing overview is in [README.md](README.md).
 ```
 decal_press/__init__.py   everything: drawing (blf), settings on the Image, materials, UV fit, operators, panel
 decal_press/fonts/        Nunito ExtraBold (static instance of the variable font, OFL)
-tests/blender/            check_decals.py (asserts), check_undo.py and screenshots.py (real window,
-                          run through window.sh), shapes.py (renders)
+tests/blender/            check_decals.py (asserts), check_export.py (3MF XML, needs the 3MF fork),
+                          check_undo.py and screenshots.py (real window, run through window.sh),
+                          shapes.py (renders)
 docs/                     DECISIONS.md, PROMPT_STATS.md, images for the README
 ```
 
@@ -71,27 +72,50 @@ repo and pushed. Current state and next steps go here, the reasons behind decisi
 
 ## State and next steps
 
-- History is in [CHANGELOG.md](CHANGELOG.md).
-- **Builds:** every build gets a tag, a GitHub pre-release with the zip, and a new download link on
-  the Workbench row (see ai-context, topics/workstation.md). Attach the zip at the top of the reply.
-- **0.5.0 (2026-11-24)** fixed the owner's "projected through, inverted on the back" (objects
-  without a material slot) and the other bugs from a bug hunt, and delivered the 2026-11-11 feedback
-  (Solid shading, no Resolution setting, panel location, modifier note). See CHANGELOG.
-- **0.5.1 (2026-11-26):** decals fit their content tightly, font fix after opening a file,
-  multi-object Add, numpy fitting (Object Mode about 9x faster on dense meshes), export check.
-  See CHANGELOG.
+Updated 2026-11-26 at the end of the sprint session (hand-over to a fresh thread).
+
+- **Version:** 0.5.2, pre-release on GitHub, Workbench row up to date. History in
+  [CHANGELOG.md](CHANGELOG.md). Unreleased on main: nothing.
+- **Builds:** every build gets a version bump, an annotated tag, a GitHub pre-release with the zip,
+  a new download link on the Workbench row (ai-context, topics/workstation.md) and the zip sent to
+  the owner first. Before a build, run `check_decals.py`, `window.sh check_undo.py`,
+  `window.sh screenshots.py` (look at them) and `check_export.py`, then install the zip in a fresh
+  config (`BLENDER_USER_CONFIG`/`BLENDER_USER_EXTENSIONS` in a temp folder, `blender --command
+  extension install-file`, `addon_utils.enable(..., default_set=True)`) and add a decal.
 - **Repo:** `calvin-young/blender-decal-press` (renamed from `decal-press`; git follows the
-  redirect, `gh` needs the new name). Issues #1-#9 were found and fixed in 0.5.0, #10-#18 are open.
-- **0.5.2 (2026-11-26):** decal images cover all their faces, because MiniMagics and SmartStream
-  repeat textures whatever the tile style says (DECISIONS D-014). Checked in the VM.
+  redirect, `gh` needs the new name).
+- **Milestone 0.5 "Trustworthy" (VISION.md):** done except a real print. 0.5.0 fixed the owner's
+  "projected through, inverted on the back" (objects with no material slot) and five more bugs,
+  and delivered the 2026-11-11 feedback; 0.5.1 tight fit, font fix after opening a file,
+  multi-object Add, numpy fitting; 0.5.2 images cover all their faces (D-014), `decals_on(obj)`.
+- **Readers (#10, tested 2026-11-26 in the Windows VM):** MiniMagics 23.5 shows layered, Replace,
+  overlapping and no-material decals correctly. SmartStream 2.0 shows Replace decals; layered
+  decal faces show gray (it shows one layer; the owner says layered files print on the 580 through
+  the printer's API). Both repeat textures outside the image whatever `tilestyle` says, hence
+  D-014. **Still open on #10: print a decal on the 580** (needs the owner). Test files come from
+  `OUT=~/decal_press_tests/export check_export.py`; the VM helpers are in
+  ai-context `tools/windows-vm/reader-benchmark/` (copy to a scratchpad, fix the paths).
+- **Owner's answers (2026-11-23, DECISIONS R-010, D-009):** Flatten/Placement order is ours;
+  sharp text first, image size won't matter; Dual Tone is a real target (5600 now, 1200 in about
+  a year); the 580 and Dual Tone resolve the same (600 dpi head, bleed to about the PA 12 grain,
+  55-60 um per HP); smallest text about 2 mm; build orientation doesn't change color.
+- **Open issues:** #10 (580 print), #11 Flatten (0.6, next big item), #12 two placement modes
+  (0.7), #13 API for Bucket Builder's labeled copies (0.8; Bucket Builder may get in touch about
+  2D labels; `decals_on` exists), #14 Dual Tone (0.8), #15 Replace overwrites the active UV map
+  (goes away with Flatten), #16 linked duplicates share decals, #17 speed (Edit Mode on dense
+  meshes is the slow case: 1.4 s per step at 1.3M faces; a cache of the decal's corners would
+  fix it), #18 Blender 4.5 untested.
+- **Suggested next steps:** the owner's test of 0.5.2 on real parts (none yet); #17 Edit Mode
+  cache; then 0.6 Flatten (#11), shared by copy with the 3MF fork's export option (agree with the
+  3MF session; see the fork's AUDIT item 7 in ai-context).
+- **Owner decisions pending:** keep the panel in Material Properties or the Sidebar after trying
+  both (portfolio D3); the 580 print.
 - **For other add-ons:** `decals_on(obj)` (in `__init__.py`) lists an object's decals with their
   text, size and problems, for Bucket Builder's export check (portfolio D6).
-- **Next (VISION.md):** the export test (a layered decal 3MF in SmartStream and MiniMagics in the
-  Windows VM, then a print); the API for Bucket Builder's labeled copies
-  (#13; Bucket Builder may contact this project about 2D labels); 0.6 Flatten; 0.7 Placement.
 - [docs/AUDIT.md](docs/AUDIT.md) (2026-11-12) and [docs/VISION.md](docs/VISION.md) hold the review
-  and the plan. AUDIT's B1 to B6, P1, P3 and the four feedback items are done in 0.5.0.
-- Open: the maintainer's test on real parts; Blender 4.5 untested; curved selections.
+  and the plan; AUDIT's bugs, P1, P3 and the four feedback items are done.
+- Known limits: curved selections stretch (flat projection, AUDIT A1); Subdivision moves the
+  surface under a decal by about 0.1 mm (D-011).
 
 ## Before you change things
 

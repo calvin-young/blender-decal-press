@@ -24,7 +24,7 @@ summaries only, never prompt text.
 | Date | Tool and model | Prompts | Steering lines | Notes |
 |---|---|---|---|---|
 | 2026-11-09/10 | Claude Code (workstation), Opus 5.5 | 6 | 13 | 0.1.0 to 0.4.0: text decals, layered and image decals, font, rename, fit on awkward faces, placement |
-| 2026-11-11/24 | Claude Code (workstation), Fable 5.2 then Opus 5.5 | 6 (relayed by an orchestrating session) | 10 | Audit, vision, bug hunt, 0.5.0 |
+| 2026-11-11/26 | Claude Code (workstation), Fable 5.2 then Opus 5.5 | 6 (relayed by an orchestrating session) | 10 | Audit, vision, bug hunt, 0.5.0 to 0.5.2, reader test in the VM |
 
 ## Steering
 
