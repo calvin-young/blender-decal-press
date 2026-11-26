@@ -3,8 +3,15 @@
 Version history of Decal Press. Builds are GitHub pre-releases until the owner signals a full
 release.
 
-## Unreleased
+## 0.5.2 (2026-11-26)
 
+- **Decals repeated in MiniMagics and SmartStream.** Both readers repeat a texture outside its
+  image whatever the 3MF tile style says, so a decal smaller than its faces (on a round face,
+  scaled down, moved, or fitted around its text in 0.5.1) printed several times across the
+  face. The decal's image now covers every face it's on, transparent around the decal
+  (background-colored for Replace Material), so no UV falls outside it. Checked in MiniMagics
+  23.5 and SmartStream 2.0 in the Windows VM.
+- A warning when a text decal's faces are so large that the image drops below 12 px per mm.
 - `decals_on(obj)` for other add-ons: an object's decals with their text, size and problems.
 
 ## 0.5.1 (2026-11-26)

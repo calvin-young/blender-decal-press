@@ -192,9 +192,9 @@ def text_pixels_per_mm(w_mm, h_mm):
     return min(ppm, MAX_PIXELS / max(w_mm, h_mm), math.sqrt(MAX_TOTAL_PIXELS / (w_mm * h_mm)))
 
 
-def _text_pixels(s):
+def _text_pixels(s, ppm):
+    """The text, drawn into an image of the decal's size at ppm pixels per mm."""
     w_mm, h_mm = max(s.width_mm, 1e-3), max(s.height_mm, 1e-3)
-    ppm = text_pixels_per_mm(w_mm, h_mm)
     # Keep the image's aspect ratio exactly the decal's, or the text stretches.
     if w_mm >= h_mm:
         height = max(4, round(h_mm * ppm))
@@ -269,16 +269,63 @@ def _image_pixels(s):
     return canvas
 
 
+def _canvas(s):
+    """The fitted canvas (x0, y0, x1, y1) in mm, or None before a fit."""
+    x0, y0, x1, y1 = s.canvas
+    return (x0, y0, x1, y1) if x1 - x0 > 1e-6 and y1 - y0 > 1e-6 else None
+
+
+def _canvas_ppm(canvas):
+    """The most pixels per mm a canvas can have within the image size limits."""
+    cw, ch = canvas[2] - canvas[0], canvas[3] - canvas[1]
+    return min(MAX_PIXELS / max(cw, ch), math.sqrt(MAX_TOTAL_PIXELS / (cw * ch)))
+
+
+def _compose(content, ppm, s, canvas):
+    """content (the decal at ppm px/mm) placed on a transparent image of the canvas.
+
+    Readers such as MiniMagics and SmartStream repeat a texture outside its
+    image whatever the 3MF tile style says, so the image covers every face the
+    decal is on and nothing is left to repeat.
+    """
+    budget = _canvas_ppm(canvas)
+    if ppm > budget * 1.0001:  # an image decal at its source resolution: thin it
+        step = math.ceil(ppm / budget)
+        content = content[::step, ::step]
+        ppm /= step
+    w_mm, h_mm = max(s.width_mm, 1e-3), max(s.height_mm, 1e-3)
+    x0, y0, x1, y1 = canvas
+    width, height = max(4, round((x1 - x0) * ppm)), max(4, round((y1 - y0) * ppm))
+    out = np.zeros((height, width, 4), dtype=np.float32)
+    if s.kind == "TEXT":
+        out[..., :3] = np.array(s.text_color, dtype=np.float32)  # no dark fringes
+    h, w = content.shape[:2]
+    ox, oy = round((-w_mm / 2 - x0) * ppm), round((-h_mm / 2 - y0) * ppm)
+    sx, sy, dx, dy = max(0, -ox), max(0, -oy), max(0, ox), max(0, oy)
+    cw, ch = min(w - sx, width - dx), min(h - sy, height - dy)
+    if cw > 0 and ch > 0:
+        out[dy:dy + ch, dx:dx + cw] = content[sy:sy + ch, sx:sx + cw]
+    return out
+
+
 def decal_pixels(s):
     """RGBA float pixels (bottom row first) for decal settings s."""
-    rgba = _image_pixels(s) if s.kind == "IMAGE" else _text_pixels(s)
+    w_mm, h_mm = max(s.width_mm, 1e-3), max(s.height_mm, 1e-3)
+    canvas = _canvas(s)
+    if s.kind == "IMAGE":
+        rgba = _image_pixels(s)
+        ppm = rgba.shape[1] / w_mm
+    else:
+        ppm = text_pixels_per_mm(w_mm, h_mm)
+        if canvas:
+            ppm = min(ppm, _canvas_ppm(canvas))
+        rgba = _text_pixels(s, ppm)
+    if canvas:
+        rgba = _compose(rgba, ppm, s, canvas)
     if s.mode == "REPLACE":
         a = rgba[..., 3:4]
         rgba[..., :3] = np.array(s.background_color, dtype=np.float32) * (1 - a) + rgba[..., :3] * a
         rgba[..., 3] = 1.0
-        # Replace textures extend their edge pixels past the decal: keep them background.
-        rgba[[0, -1], :, :3] = background = np.array(s.background_color, dtype=np.float32)
-        rgba[:, [0, -1], :3] = background
     return rgba
 
 
@@ -287,7 +334,7 @@ def _drawn_with(s):
     return (s.kind, s.mode, s.text, tuple(s.text_color), tuple(s.background_color),
             s.font_path, round(s.margin, 6), s.source.name if s.source else "", s.use_key,
             tuple(s.key_color), round(s.key_tolerance, 6), round(s.key_softness, 6),
-            round(s.width_mm, 6), round(s.height_mm, 6))
+            round(s.width_mm, 6), round(s.height_mm, 6), tuple(round(c, 6) for c in s.canvas))
 
 
 def update_decal(img):
@@ -418,6 +465,9 @@ class DecalSettings(bpy.types.PropertyGroup):
     fit_rect: FloatVectorProperty(size=4)  # (u0, v0, u1, v1) in mm in the fit frame
     width_mm: FloatProperty(default=10.0)
     pad_mm: FloatProperty(default=-1.0)  # margin around the content in mm; -1: not fitted yet
+    # The faces' extent around the decal (x0, y0, x1, y1), in mm from its centre along its
+    # turned axes. The image covers all of it, so every UV is inside the image.
+    canvas: FloatVectorProperty(size=4)
     off_faces: BoolProperty(default=False)  # moved entirely off its faces
     letter_mm: FloatProperty(default=0.0)  # capital letter height of a text decal
     height_mm: FloatProperty(default=10.0)
@@ -1020,9 +1070,13 @@ def fit_decal(obj, img, search=True):
                        or abs(cv - vmin - height / 2) >= (height + ey) / 2)
 
     x, y = (corners @ uv_axes - (cu, cv)).T
+    xr, yr = x * ca - y * sa, x * sa + y * ca  # along the decal's turned axes, from its centre
+    x0, x1, y0, y1 = xr.min(), xr.max(), yr.min(), yr.max()
+    x1, y1 = max(x1, x0 + 1e-3), max(y1, y0 + 1e-3)
     uv = np.empty((len(loops), 2), dtype=np.float32)
-    uv[:, 0] = (x * ca - y * sa) / dw + 0.5
-    uv[:, 1] = (x * sa + y * ca) / dh + 0.5
+    uv[:, 0] = (xr - x0) / (x1 - x0)
+    uv[:, 1] = (yr - y0) / (y1 - y0)
+    s.canvas = (x0, y0, x1, y1)
     s.width_mm, s.height_mm = dw, dh
     return faces, loops, uv
 
@@ -1558,16 +1612,20 @@ def _draw_decal(layout, img, on_face=False):
     col.prop(s, "angle")
 
     info = box.column(align=True)
+    canvas = _canvas(s)
+    ppm = img.size[0] / (canvas[2] - canvas[0]) if canvas else img.size[0] / max(s.width_mm, 1e-6)
     if s.kind == "TEXT" and s.letter_mm > 0:
         info.label(text=f"Letters {s.letter_mm:.1f} mm tall, decal "
                         f"{s.width_mm:.1f} x {s.height_mm:.1f} mm")
+        if ppm < SOFT_PIXELS_PER_MM:
+            info.label(text=f"{ppm:.1f} px per mm: select fewer faces for sharper text",
+                       icon="ERROR")
         if s.letter_mm < LEGIBLE_MM:
             info.label(text=f"Letters under {LEGIBLE_MM:g} mm may not print legibly",
                        icon="ERROR")
     else:
         w, h = img.size
         info.label(text=f"{s.width_mm:.1f} x {s.height_mm:.1f} mm, {w} x {h} px")
-        ppm = w / max(s.width_mm, 1e-6)
         if s.kind == "IMAGE" and ppm < SOFT_PIXELS_PER_MM:
             info.label(text=f"{ppm:.1f} px per mm: may print soft (the printer resolves "
                             f"about 24)", icon="ERROR")

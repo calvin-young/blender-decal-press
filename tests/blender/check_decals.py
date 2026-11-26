@@ -147,10 +147,12 @@ def check(name, obj, img, selected, result):
                 upside_down += 1
         for i in li:
             u, v = uv.data[i].uv
-            if -0.02 <= u <= 1.02 and -0.02 <= v <= 1.02:
+            if -1e-4 <= u <= 1 + 1e-4 and -1e-4 <= v <= 1 + 1e-4:
                 inside += 1
             else:
                 outside += 1
+    if outside:
+        problems.append(f"{outside} UVs outside the image (readers repeat the texture there)")
     if mirrored:
         problems.append(f"mirrored on {mirrored} faces")
     if upside_down:
@@ -161,7 +163,8 @@ def check(name, obj, img, selected, result):
     if s.height_mm <= 0 or s.width_mm <= 0:
         problems.append("zero size")
     else:
-        aspect_mm = s.width_mm / s.height_mm
+        x0, y0, x1, y1 = s.canvas
+        aspect_mm = (x1 - x0) / (y1 - y0)
         aspect_px = w_px / h_px
         if abs(aspect_px / aspect_mm - 1) > 0.03:
             problems.append(f"stretched: {aspect_mm:.3f} mm aspect vs {aspect_px:.3f} px")
@@ -173,10 +176,12 @@ def check(name, obj, img, selected, result):
     if max(s.width_mm, s.height_mm) > span * 1.05:
         problems.append(f"decal {s.width_mm:.2f} mm wider than the faces ({span:.2f} mm)")
 
-    # Legibility: letter height in pixels. The text fills (1 - 2 margin) of the short side.
-    letter_px = min(w_px, h_px) * (1 - 2 * s.margin)
-    if letter_px < 48:
-        problems.append(f"letters only {letter_px:.0f} px tall")
+    # Sharpness: print resolution, unless the image size limits stop it.
+    canvas = (s.canvas[0], s.canvas[1], s.canvas[2], s.canvas[3])
+    ppm = h_px / max(canvas[3] - canvas[1], 1e-9)
+    want = min(dp.PRINT_PIXELS_PER_MM, dp._canvas_ppm(canvas))
+    if s.text.strip() and ppm < 0.97 * want:
+        problems.append(f"only {ppm:.1f} px per mm (print resolution is {want:.0f})")
     info = (f"{s.width_mm:8.2f} x {s.height_mm:7.2f} mm  {w_px:5d} x {h_px:4d} px  "
             f"{len(selected):4d} faces  uv in/out {inside}/{outside}")
     return problems, info

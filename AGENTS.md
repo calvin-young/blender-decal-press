@@ -7,7 +7,7 @@ The human-facing overview is in [README.md](README.md).
 
 - **What it is:** a Blender add-on that puts text or image decals on selected faces as textures,
   layered over the faces' material (layered 3MF) or replacing it, for full-color printing.
-- **Status:** in development (0.5.1, 2026-11-26). Tested on Blender 5.2.3 only.
+- **Status:** in development (0.5.2, 2026-11-26). Tested on Blender 5.2.3 only.
 - **Runs in:** Blender 4.5+ as an extension (`decal_press/blender_manifest.toml`).
 
 ## Setup, test, package
@@ -56,6 +56,8 @@ docs/                     DECISIONS.md, PROMPT_STATS.md, images for the README
 - Fitting reads the mesh with numpy (`_mesh_array`): through the attribute API in Object Mode
   (10-80x faster than the legacy collections), through the legacy ones in Edit Mode, where
   `mesh.attributes` shows the edit mesh's layers instead of the synced mesh.
+- Every decal UV lies inside its image: the image covers the faces' extent (`canvas`) and the
+  decal is pasted into it (`_compose`). Readers repeat textures outside the image. Tests check it.
 - Text resolution: 48 px/mm (two texels per 600 dpi printhead dot), at least 256 px short side,
   at most 8192 px a side and 16 MP (DECISIONS D-009).
 - SPDX `GPL-3.0-or-later` header on every source file.
@@ -80,6 +82,8 @@ repo and pushed. Current state and next steps go here, the reasons behind decisi
   See CHANGELOG.
 - **Repo:** `calvin-young/blender-decal-press` (renamed from `decal-press`; git follows the
   redirect, `gh` needs the new name). Issues #1-#9 were found and fixed in 0.5.0, #10-#18 are open.
+- **0.5.2 (2026-11-26):** decal images cover all their faces, because MiniMagics and SmartStream
+  repeat textures whatever the tile style says (DECISIONS D-014). Checked in the VM.
 - **For other add-ons:** `decals_on(obj)` (in `__init__.py`) lists an object's decals with their
   text, size and problems, for Bucket Builder's export check (portfolio D6).
 - **Next (VISION.md):** the export test (a layered decal 3MF in SmartStream and MiniMagics in the

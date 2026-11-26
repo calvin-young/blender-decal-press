@@ -20,6 +20,19 @@ Newest first within each section.
 
 ## Decisions
 
+### D-014: The image covers every face the decal is on (0.5.2)
+3MF lets a texture say what happens outside its image (`tilestyle` none or clamp), but MiniMagics
+23.5 and SmartStream 2.0 repeat the texture anyway (tested in the Windows VM, 2026-11-26). Any
+decal smaller than its faces printed several times. So the image now spans the faces' extent
+along the decal's own axes (`canvas`), with the decal pasted where it belongs and transparent
+elsewhere; every UV lies in [0, 1] and nothing depends on the tile style. The cost is image size
+when a small decal sits on large faces: text keeps print resolution up to the size limits (8192 px
+a side, 16 MP), and the panel warns when it drops below 12 px/mm. Cutting the faces along the
+decal's edge would avoid that, but the part's mesh is never changed.
+Readers seen with decal files: MiniMagics blends layered decals correctly; SmartStream shows a
+layered decal's face gray (it shows one layer, the owner reports layered files print through the
+printer's API) and Replace decals correctly.
+
 ### D-013: Panel under the material slots, or in the sidebar (0.5.0)
 0.4.0's panel sat below every built-in Material panel, off screen, and was easy to miss entirely.
 It is now a sub-panel of the material slot list (one class for EEVEE/Workbench's slot panel, one

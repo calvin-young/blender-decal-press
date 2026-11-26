@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "decal_press"
-version = "0.5.1"
+version = "0.5.2"
 name = "Decal Press"
 tagline = "Text and image decals on faces, for full-color 3D printing"
 maintainer = "Calvin Young <github.com/calvin-young>"
