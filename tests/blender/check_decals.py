@@ -167,7 +167,9 @@ def check(name, obj, img, selected, result):
             problems.append(f"stretched: {aspect_mm:.3f} mm aspect vs {aspect_px:.3f} px")
     world_pts = [mw @ me.vertices[v].co for p in me.polygons if p.index in selected
                  for v in p.vertices]
-    span = max((a - b).length for a in world_pts[:200] for b in world_pts[:200])
+    lo = Vector([min(p[i] for p in world_pts) for i in range(3)])
+    hi = Vector([max(p[i] for p in world_pts) for i in range(3)])
+    span = (hi - lo).length
     if max(s.width_mm, s.height_mm) > span * 1.05:
         problems.append(f"decal {s.width_mm:.2f} mm wider than the faces ({span:.2f} mm)")
 

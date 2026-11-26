@@ -895,29 +895,60 @@ def _content_box(s, avail_w, avail_h):
     return cw * k + 2 * pad, ch * k + 2 * pad, pad
 
 
+def _mesh_array(me, kind, n):
+    """Mesh data as a numpy array, read the fastest way that sees the current mesh.
+
+    In Object Mode the attribute API is 10-80x faster than the legacy polygon,
+    loop and vertex collections. In Edit Mode mesh.attributes shows the edit
+    mesh's layers instead, so read the synced mesh through the legacy ones.
+    """
+    editing = me.is_editmode
+    if kind == "material_index":
+        out = np.zeros(n, dtype=np.int32)
+        attr = None if editing else me.attributes.get("material_index")
+        if editing:
+            me.polygons.foreach_get("material_index", out)
+        elif attr is not None:
+            attr.data.foreach_get("value", out)
+    elif kind == "corner_vert":
+        out = np.empty(n, dtype=np.int32)
+        if editing:
+            me.loops.foreach_get("vertex_index", out)
+        else:
+            me.attributes[".corner_vert"].data.foreach_get("value", out)
+    else:  # position
+        out = np.empty(n * 3, dtype=np.float32)
+        if editing:
+            me.vertices.foreach_get("co", out)
+        else:
+            me.attributes["position"].data.foreach_get("vector", out)
+    return out
+
+
 def _decal_loops(obj, img):
     """(faces, loops, loop vertices) of obj's mesh where img shows, as arrays, or None."""
     me = obj.data
     slots = [i for i, slot in enumerate(obj.material_slots)
              if slot.material and any(n.image == img for n in decal_nodes(slot.material))]
-    nf = len(me.polygons)
+    nf, nl = len(me.polygons), len(me.loops)
     if not slots or not nf:
         return None
-    mat = np.empty(nf, dtype=np.int32)
-    me.polygons.foreach_get("material_index", mat)
+    mat = _mesh_array(me, "material_index", nf)
     faces = np.flatnonzero(np.isin(mat, slots))
     if not len(faces):
         return None
     start = np.empty(nf, dtype=np.int32)
-    total = np.empty(nf, dtype=np.int32)
     me.polygons.foreach_get("loop_start", start)
-    me.polygons.foreach_get("loop_total", total)
+    total = np.diff(np.append(start, nl))
     counts = total[faces]
-    offsets = np.arange(counts.sum()) - np.repeat(np.cumsum(counts) - counts, counts)
+    ends = np.cumsum(counts)
+    offsets = np.arange(ends[-1]) - np.repeat(ends - counts, counts)
     loops = np.repeat(start[faces], counts) + offsets
-    loop_vert = np.empty(len(me.loops), dtype=np.int32)
-    me.loops.foreach_get("vertex_index", loop_vert)
-    return faces, loops, loop_vert[loops]
+    loop_vert = _mesh_array(me, "corner_vert", nl)
+    # Each loop's successor within its face, for edge-based normals.
+    nxt = np.arange(1, len(loops) + 1)
+    nxt[ends - 1] = ends - counts
+    return faces, loops, loop_vert[loops], nxt
 
 
 def fit_decal(obj, img, search=True):
@@ -931,20 +962,18 @@ def fit_decal(obj, img, search=True):
     found = _decal_loops(obj, img)
     if found is None:
         return None
-    faces, loops, verts = found
+    faces, loops, verts, nxt = found
     me = obj.data
-    co = np.empty(len(me.vertices) * 3, dtype=np.float64)
-    me.vertices.foreach_get("co", co)
+    co = _mesh_array(me, "position", len(me.vertices))
     mw = np.array(obj.matrix_world, dtype=np.float64)
-    world = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
+    world = co.reshape(-1, 3).astype(np.float64) @ mw[:3, :3].T + mw[:3, 3]
 
-    nf = len(me.polygons)
-    fn = np.empty(nf * 3, dtype=np.float64)
-    area = np.empty(nf, dtype=np.float64)
-    me.polygons.foreach_get("normal", fn)
-    me.polygons.foreach_get("area", area)
-    nmat = np.array(obj.matrix_world.to_3x3().inverted_safe().transposed(), dtype=np.float64)
-    normal = Vector(((fn.reshape(-1, 3)[faces] * area[faces, None]) @ nmat.T).sum(axis=0))
+    # Sum of p x p_next over every face's edges: twice the area-weighted normal.
+    # A mirroring transform reverses the winding, so flip it back.
+    corners = world[verts]
+    normal = Vector(np.cross(corners, corners[nxt]).sum(axis=0))
+    if np.linalg.det(mw[:3, :3]) < 0:
+        normal = -normal
     if normal.length < 1e-9:
         return None
     normal.normalize()
@@ -990,7 +1019,7 @@ def fit_decal(obj, img, search=True):
     s.off_faces = bool(abs(cu - umin - width / 2) >= (width + ex) / 2
                        or abs(cv - vmin - height / 2) >= (height + ey) / 2)
 
-    x, y = (world[verts] @ uv_axes - (cu, cv)).T
+    x, y = (corners @ uv_axes - (cu, cv)).T
     uv = np.empty((len(loops), 2), dtype=np.float32)
     uv[:, 0] = (x * ca - y * sa) / dw + 0.5
     uv[:, 1] = (x * sa + y * ca) / dh + 0.5
@@ -1033,12 +1062,14 @@ def refit(img, search=True, redraw=True, objects=None):
             bmesh.update_edit_mesh(obj.data)
         else:
             me = obj.data
-            layer = me.uv_layers.get(s.uv_map) or me.uv_layers.new(name=s.uv_map)
+            if s.uv_map not in me.uv_layers:
+                me.uv_layers.new(name=s.uv_map)
+            attr = me.attributes[s.uv_map]  # 30x faster than uv_layers[...].data
             data = np.empty(len(me.loops) * 2, dtype=np.float32)
-            layer.data.foreach_get("uv", data)
+            attr.data.foreach_get("vector", data)
             data = data.reshape(-1, 2)
             data[loops] = uv
-            layer.data.foreach_set("uv", data.ravel())
+            attr.data.foreach_set("vector", data.ravel())
             me.update()
     if ok and redraw:
         update_decal(img)

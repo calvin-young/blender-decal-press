@@ -61,7 +61,7 @@ how the fit works and why. Text is drawn with Blender's own `blf` module. 1 Blen
 
 ## Status
 
-0.5.0, in development. Tested on Blender 5.2.3 only; declared for 4.5 and newer (`blf.bind_imbuf`
+0.5.1, in development. Tested on Blender 5.2.3 only; declared for 4.5 and newer (`blf.bind_imbuf`
 first appears in the 4.5 release notes), but 4.5 is untested
 ([issue](https://github.com/calvin-young/blender-decal-press/issues)). Not yet printed from a file
 exported by this add-on. Version history: [CHANGELOG.md](CHANGELOG.md).

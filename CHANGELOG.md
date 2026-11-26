@@ -3,8 +3,25 @@
 Version history of Decal Press. Builds are GitHub pre-releases until the owner signals a full
 release.
 
-## Unreleased
+## 0.5.1 (2026-11-26)
 
+Fixes:
+- After opening another .blend, editing any text decal failed ("unknown fontid"): opening a file
+  frees the fonts the add-on had loaded.
+- With several objects in Edit Mode, only the active one got the decal; each now gets its own.
+- An image painted in Blender wasn't packed, so its decal couldn't be redrawn after reloading.
+
+Changes:
+- Decals fit tightly around their text or image instead of filling the faces' clear area with
+  transparent pixels, so the image's resolution goes to the content (sharper long text; logos
+  no longer padded).
+- Warnings when a decal is moved off its faces, and when an image decal has under 12 px per mm.
+- Faster on dense meshes: moving a decal on a 1.3 million-face part went from 1.6 s to 0.19 s
+  per step in Object Mode (2.0 s to 1.4 s in Edit Mode, which has to sync the mesh first). The
+  mesh is read with numpy, through Blender's attribute API in Object Mode, and only the decal's
+  own loops are written.
+- tests/blender/check_export.py checks what blender-3mf-io writes for layered, overlapping and
+  Replace decals.
 - The manifest's website points to the renamed repo, blender-decal-press.
 
 ## 0.5.0 (2026-11-24)

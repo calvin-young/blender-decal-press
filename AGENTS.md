@@ -7,7 +7,7 @@ The human-facing overview is in [README.md](README.md).
 
 - **What it is:** a Blender add-on that puts text or image decals on selected faces as textures,
   layered over the faces' material (layered 3MF) or replacing it, for full-color printing.
-- **Status:** in development (0.5.0, 2026-11-24). Tested on Blender 5.2.3 only.
+- **Status:** in development (0.5.1, 2026-11-26). Tested on Blender 5.2.3 only.
 - **Runs in:** Blender 4.5+ as an extension (`decal_press/blender_manifest.toml`).
 
 ## Setup, test, package
@@ -24,9 +24,9 @@ The human-facing overview is in [README.md](README.md).
   `window.sh` uses a throwaway user config so no splash covers the view.
 - **Shape renders:** `blender -b --factory-startup --python tests/blender/shapes.py` renders decals on
   awkward synthetic shapes to `~/decal_press_tests/`. Look at the images; nothing judges them.
-- **3MF export check (needs blender-3mf-io on the layered-textures branch):** not in the repo yet;
-  export a layered decal with `io_mesh_3mf.api.export_3mf` and look for `<m:multiproperties` and
-  `tilestyleu="none"` in `3D/3dmodel.model`.
+- **3MF export check:** `MF=<folder with io_mesh_3mf> blender -b --factory-startup --python
+  tests/blender/check_export.py`, with the fork's layered-texture export (e.g. `git -C
+  ~/dev/blender-3mf-io archive test-all-prs io_mesh_3mf | tar -x -C /tmp/mf`). Checks the XML.
 - **Build a zip:** `cd decal_press && zip -r ../decal_press-<version>.zip . -x "__pycache__/*"`.
   Bump `version` in the manifest first.
 
@@ -53,6 +53,9 @@ docs/                     DECISIONS.md, PROMPT_STATS.md, images for the README
   has its own UV map; Remove leaves no slots, materials or UV maps behind. Tests check this.
 - Images are packed on save (`save_pre`), not on every change. Undo restores settings but not
   pixels, so `undo_post` redraws decals whose settings no longer match what was drawn (`_drawn`).
+- Fitting reads the mesh with numpy (`_mesh_array`): through the attribute API in Object Mode
+  (10-80x faster than the legacy collections), through the legacy ones in Edit Mode, where
+  `mesh.attributes` shows the edit mesh's layers instead of the synced mesh.
 - Text resolution: 48 px/mm (two texels per 600 dpi printhead dot), at least 256 px short side,
   at most 8192 px a side and 16 MP (DECISIONS D-009).
 - SPDX `GPL-3.0-or-later` header on every source file.
@@ -72,6 +75,9 @@ repo and pushed. Current state and next steps go here, the reasons behind decisi
 - **0.5.0 (2026-11-24)** fixed the owner's "projected through, inverted on the back" (objects
   without a material slot) and the other bugs from a bug hunt, and delivered the 2026-11-11 feedback
   (Solid shading, no Resolution setting, panel location, modifier note). See CHANGELOG.
+- **0.5.1 (2026-11-26):** decals fit their content tightly, font fix after opening a file,
+  multi-object Add, numpy fitting (Object Mode about 9x faster on dense meshes), export check.
+  See CHANGELOG.
 - **Repo:** `calvin-young/blender-decal-press` (renamed from `decal-press`; git follows the
   redirect, `gh` needs the new name). Issues #1-#9 were found and fixed in 0.5.0, #10-#18 are open.
 - **Next (VISION.md):** the export test (a layered decal 3MF in SmartStream and MiniMagics in the
