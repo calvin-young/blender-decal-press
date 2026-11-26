@@ -418,6 +418,15 @@ def sequences():
                    and len(dp.object_decals(two)) == 1
                    and dp.object_decals(one) != dp.object_decals(two)))
 
+    clear()
+    obj, _ = build("cube", 2)
+    obj.data.materials.append(body_material())
+    add_decal(obj, front, "Tiny label")
+    info = dp.decals_on(obj)
+    checks.append(("decals_on lists the decal with its text and a small-letters problem",
+                   len(info) == 1 and info[0]["text"] == "Tiny label"
+                   and info[0]["problems"] == [f"letters under {dp.LEGIBLE_MM:g} mm"]))
+
     from types import SimpleNamespace
     real = dp._prefs
     dp._prefs = lambda: SimpleNamespace(panel_location="SIDEBAR", sidebar_tab="Print",

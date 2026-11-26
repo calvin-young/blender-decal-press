@@ -80,8 +80,10 @@ repo and pushed. Current state and next steps go here, the reasons behind decisi
   See CHANGELOG.
 - **Repo:** `calvin-young/blender-decal-press` (renamed from `decal-press`; git follows the
   redirect, `gh` needs the new name). Issues #1-#9 were found and fixed in 0.5.0, #10-#18 are open.
+- **For other add-ons:** `decals_on(obj)` (in `__init__.py`) lists an object's decals with their
+  text, size and problems, for Bucket Builder's export check (portfolio D6).
 - **Next (VISION.md):** the export test (a layered decal 3MF in SmartStream and MiniMagics in the
-  Windows VM, then a print); `decals_on(obj)` and the API for Bucket Builder's labeled copies
+  Windows VM, then a print); the API for Bucket Builder's labeled copies
   (#13; Bucket Builder may contact this project about 2D labels); 0.6 Flatten; 0.7 Placement.
 - [docs/AUDIT.md](docs/AUDIT.md) (2026-11-12) and [docs/VISION.md](docs/VISION.md) hold the review
   and the plan. AUDIT's B1 to B6, P1, P3 and the four feedback items are done in 0.5.0.

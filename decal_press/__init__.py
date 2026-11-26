@@ -1106,6 +1106,30 @@ def object_decals(obj):
     return found
 
 
+def decals_on(obj):
+    """The decals shown on obj, for other add-ons (e.g. an export check).
+
+    A list of dicts: name, kind ("TEXT" or "IMAGE"), text, mode ("LAYER" or
+    "REPLACE"), width_mm, height_mm, letter_mm (0 for images), and problems: a
+    list of short strings ("letters under 2 mm", "moved off its faces").
+    Other add-ons find it through the add-on's module, e.g.
+    ``sys.modules["bl_ext.user_default.decal_press"].decals_on(obj)``.
+    """
+    out = []
+    for img in object_decals(obj):
+        s = img.decal_press
+        problems = []
+        if s.kind == "TEXT" and 0 < s.letter_mm < LEGIBLE_MM:
+            problems.append(f"letters under {LEGIBLE_MM:g} mm")
+        if s.off_faces:
+            problems.append("moved off its faces")
+        out.append({"name": img.name, "kind": s.kind, "text": s.text if s.kind == "TEXT" else "",
+                    "mode": s.mode, "width_mm": s.width_mm, "height_mm": s.height_mm,
+                    "letter_mm": s.letter_mm if s.kind == "TEXT" else 0.0,
+                    "problems": problems})
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Operators
 

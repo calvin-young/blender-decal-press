@@ -3,6 +3,10 @@
 Version history of Decal Press. Builds are GitHub pre-releases until the owner signals a full
 release.
 
+## Unreleased
+
+- `decals_on(obj)` for other add-ons: an object's decals with their text, size and problems.
+
 ## 0.5.1 (2026-11-26)
 
 Fixes:

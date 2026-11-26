@@ -31,13 +31,14 @@ is the export test in 0.5.
 
 ### 0.5 Trustworthy
 The four feedback items of 2026-11-11 and the audit's bugs. No change to how decals are stored.
-0.5.0 (2026-11-24) delivers all of it except the export test and `decals_on(obj)`:
-- **Export test** (still open): a layered decal 3MF opened in SmartStream and MiniMagics (Windows
-  VM), then printed on the 580. If layers aren't read, 0.6 becomes urgent.
+0.5.0 and 0.5.1 (2026-11-24/26) deliver all of it except the printer-software test:
+- **Export test:** the XML is checked (tests/blender/check_export.py). Still open: the file
+  opened in SmartStream and MiniMagics (Windows VM), then printed on the 580 (#10). If layers
+  aren't read, 0.6 becomes urgent.
 - Done: bugs B1 to B6 (objects without materials, overlap, remove, failed adds), tests that assert,
   undo.
-- Done: decals drawn in Solid shading, a list of every decal on the object. Still to do:
-  `decals_on(obj)` for Bucket Builder's export check (with the API in 0.8).
+- Done: decals drawn in Solid shading, a list of every decal on the object, `decals_on(obj)` for
+  Bucket Builder's export check.
 - Done: no Resolution setting; resolution from the printer (DECISIONS D-009); Letter Height.
 - Done: panel location preference (Material Properties or Sidebar).
 - Done: a note when a modifier changes the shape under a decal.
